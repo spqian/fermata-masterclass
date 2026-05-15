@@ -69,6 +69,26 @@
       width: 100px;
       outline: none;
     }
+
+    .user-menu { position: relative; }
+    .auth-pill {
+      color: var(--ink-soft); text-decoration: none; background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(201,169,106,0.24); border-radius: 999px;
+      padding: 6px 12px; font-size: 12px; cursor: pointer;
+    }
+    .auth-pill:hover { border-color: var(--gold); color: var(--ink); }
+    .user-dropdown {
+      display: none; position: absolute; right: 0; top: calc(100% + 8px); min-width: 150px;
+      background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 6px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.35); padding: 6px; z-index: 20;
+    }
+    .user-dropdown.open { display: block; }
+    .user-dropdown a, .user-dropdown button {
+      display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0;
+      background: transparent; color: var(--ink-soft); text-decoration: none; font: 12px "Inter", sans-serif;
+      cursor: pointer; border-radius: 4px;
+    }
+    .user-dropdown a:hover, .user-dropdown button:hover { background: rgba(201,169,106,0.08); color: var(--gold); }
     main {
       display: flex;
       flex-direction: column;
@@ -452,7 +472,7 @@
     <div class="meta">
       <span class="alignment-tag llm" id="alignment-tag" title="Alignment source">…</span>
       <span>session <span id="session-id" style="color:var(--ink-soft);font-family:monospace"></span></span>
-      <label>user <input id="user-id" value="pqian" autocomplete="off"></label>
+      <div class="user-menu"><a id="auth-pill" class="auth-pill" href="/auth/login">Sign in with Google</a><div id="user-dropdown" class="user-dropdown"></div></div>
     </div>
   </header>
 
@@ -520,13 +540,35 @@
 
   <script>
     const SESSION_ID = "__SESSION_ID__";
-    const userInput = document.getElementById("user-id");
     const urlParams = new URLSearchParams(window.location.search);
     const initialUserId = (urlParams.get("user_id") || "").trim();
-    if (initialUserId) userInput.value = initialUserId;
+    let currentUser = null;
+    const devUserId = initialUserId || "pqian";
     document.getElementById("session-id").textContent = SESSION_ID.slice(0, 12) + "…";
 
-    function userId() { return (userInput.value || "").trim() || "pqian"; }
+    function userId() { return (currentUser && currentUser.google_sub) || devUserId; }
+
+    async function initAuthPill() {
+      const pill = document.getElementById("auth-pill");
+      const dropdown = document.getElementById("user-dropdown");
+      try {
+        currentUser = await fetch("/auth/me").then(r => r.ok ? r.json() : null);
+      } catch (_) { currentUser = null; }
+      if (currentUser) {
+        pill.textContent = `${currentUser.email} ▾`;
+        pill.href = "javascript:void(0)";
+        pill.onclick = (e) => { e.preventDefault(); dropdown.classList.toggle("open"); };
+        dropdown.innerHTML = `<a href="/settings">Settings</a><button type="button" id="auth-signout">Sign out</button>`;
+        document.getElementById("auth-signout").onclick = async () => { await fetch("/auth/logout", { method: "POST" }); window.location.href = "/"; };
+      } else {
+        pill.textContent = "Sign in with Google";
+        pill.href = `/auth/login?next=${encodeURIComponent(window.location.pathname + window.location.search + window.location.hash)}`;
+        dropdown.classList.remove("open");
+        dropdown.innerHTML = "";
+      }
+      document.addEventListener("click", (e) => { if (!e.target.closest(".user-menu")) dropdown.classList.remove("open"); });
+    }
+
     function uquery() { return `?user_id=${encodeURIComponent(userId())}`; }
     async function fetchJson(url) {
       const r = await fetch(url, { headers: { "X-User-Id": userId() } });
@@ -1302,12 +1344,10 @@
     function schedulePoll() { stopPolling(); pollHandle = setTimeout(loadAll, 5000); }
     function stopPolling() { if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; } }
 
-    userInput.addEventListener("change", () => {
+    initAuthPill().then(() => {
       video.src = `/lessons/${SESSION_ID}/video${uquery()}`;
       loadAll();
     });
-
-    loadAll();
   </script>
 </body>
 </html>

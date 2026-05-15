@@ -122,9 +122,11 @@ Three classes of background work:
 
 3. **Per-API-request**: agent tool invocations (`watch`, `listen`, `inspect_*`) run synchronously inside the teacher's tool-call loop, blocking the parent thread. Each tool itself may shell out to ffmpeg or call Gemini.
 
-## Multi-tenancy
+## Multi-tenancy and authentication
 
-Every request must carry `X-Tenant-Id` and `X-User-Id` headers (defaulting to `pqian`/`pqian` for local dev). All storage keys are scoped to the tenant. There's no auth — the headers are trusted, intended for a future identity layer.
+Browser requests can authenticate with Google Sign-In. The OAuth callback stores or updates `user_profiles/{google_sub}.json`, then sets an httponly signed `fermata_session` cookie whose content is only the canonical user id (`google_sub`). On each request the API reloads the profile from object storage. For now `tenant_id == user_id == google_sub`.
+
+The legacy `X-User-Id` header and `user_id` query fallback remain supported for scripts, CI, and repair tooling. When a valid session cookie and header are both present, the session cookie wins. All storage keys remain scoped under `tenant/{tenant_id}/users/{user_id}/`.
 
 A masterclass is a **class series** for one piece (e.g. "Chopin Nocturne Op 9 No 2"). It owns the score PDF + reference MIDI. Multiple lesson sessions can be uploaded against the same masterclass; each session has its own audio/video/analysis/comments but shares the masterclass's score and MIDI.
 

@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-api = ["fastapi", "python-multipart", "uvicorn"]
+api = ["fastapi", "python-multipart", "uvicorn", "authlib", "cryptography"]
 azure = ["azure-storage-file-datalake", "azure-identity"]
 llm = ["google-genai"]
 

@@ -24,6 +24,53 @@ For background/detached operation, use `Start-Process` with `-RedirectStandardEr
 
 If any of these are missing, see `tooling.md` for download URLs.
 
+
+## Authentication
+
+Fermata supports Google Sign-In using OAuth 2.0 Authorization Code flow with PKCE. The app requests only these scopes:
+
+```text
+openid email profile
+```
+
+Do **not** add `cloud-platform` or other sensitive scopes for normal sign-in.
+
+### Register a Google OAuth client
+
+1. Open <https://console.cloud.google.com/apis/credentials>.
+2. Choose or create a project.
+3. Configure the OAuth consent screen for your app.
+4. Create **OAuth client ID** → **Web application**.
+5. Add this authorized redirect URI for local development:
+
+```text
+http://127.0.0.1:8770/auth/callback
+```
+
+For a different host or port, use the matching `/auth/callback` URL.
+
+### Environment variables
+
+Add these to `.env`:
+
+```text
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+GOOGLE_OAUTH_REDIRECT_URI=http://127.0.0.1:8770/auth/callback
+MASTERCLASS_KEY_ENCRYPTION_KEY=...
+ALLOW_SERVER_DEFAULT_KEY=true
+```
+
+`MASTERCLASS_KEY_ENCRYPTION_KEY` must be a 32-byte URL-safe base64 Fernet key:
+
+```powershell
+tools\python\python.exe -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+If the key is missing in local development, startup generates one and appends it to `.env`. If `MASTERCLASS_PRODUCTION=true`, startup fails instead.
+
+Browser sessions use an httponly `fermata_session` signed cookie containing only the Google subject (`google_sub`). The legacy `X-User-Id` header remains supported for scripts and CI; if both are present, the session cookie wins.
+
 ## Common tasks
 
 ### Wipe all local data

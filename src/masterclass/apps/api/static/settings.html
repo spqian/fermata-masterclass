@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings · Music Masterclass</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root { color-scheme: dark; --bg:#0b0d12; --panel:rgba(22,24,32,.94); --panel-edge:rgba(255,255,255,.06); --ink:#f5f1e8; --ink-soft:#c5c0b3; --ink-mute:#7a7669; --gold:#c9a96a; --gold-soft:#8a7654; --rule:rgba(201,169,106,.22); --danger:#d97a6c; --accent:#a4b8d6; --good:#8ec585; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-family:"Inter",system-ui,sans-serif; min-height:100vh; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; padding:18px 32px; border-bottom:1px solid var(--panel-edge); }
+    .brand { display:flex; align-items:center; gap:12px; font-size:14px; font-weight:600; } .mark { width:28px; height:28px; border:1px solid var(--gold); color:var(--gold); border-radius:4px; display:grid; place-items:center; font-weight:700; }
+    .topbar a { color:var(--ink-mute); text-decoration:none; font-size:12px; } .topbar a:hover { color:var(--gold); }
+    main { max-width:820px; margin:0 auto; padding:34px 28px 80px; } h1 { margin:0 0 8px; font-size:28px; } .sub { color:var(--ink-soft); line-height:1.5; margin-bottom:24px; }
+    .panel { background:var(--panel); border:1px solid var(--panel-edge); border-radius:6px; padding:22px 24px; margin-bottom:18px; }
+    h2 { margin:0 0 14px; font-size:16px; } label { display:block; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; margin-bottom:8px; }
+    input[type=password] { width:100%; background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.1); border-radius:4px; color:var(--ink); padding:11px 12px; font:14px "Inter",sans-serif; }
+    input:focus { outline:none; border-color:var(--gold); background:rgba(201,169,106,.06); }
+    button, .button { background:var(--gold); color:#1a1610; border:0; border-radius:4px; padding:11px 18px; font:600 13px "Inter",sans-serif; cursor:pointer; text-decoration:none; display:inline-block; }
+    button.ghost { background:transparent; color:var(--ink-soft); border:1px solid rgba(255,255,255,.14); } button.ghost:hover { border-color:var(--gold); color:var(--ink); }
+    .row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; } .status { font-size:13px; color:var(--ink-mute); } .status.good { color:var(--good); } .status.warn { color:var(--danger); }
+    .steps details { border-top:1px solid var(--rule); padding:12px 0; } .steps summary { cursor:pointer; color:var(--gold); font-weight:600; } .steps p { color:var(--ink-soft); line-height:1.55; }
+    .steps a { color:var(--gold); } .radio { display:block; padding:12px 14px; border:1px solid rgba(255,255,255,.08); border-radius:5px; margin:10px 0; cursor:pointer; }
+    .radio input { margin-right:8px; } .radio small { display:block; color:var(--ink-mute); margin-left:25px; margin-top:4px; line-height:1.45; }
+    .account { color:var(--ink-soft); } code { font-family:"JetBrains Mono",monospace; color:var(--gold); }
+  </style>
+</head>
+<body>
+  <header class="topbar"><div class="brand"><div class="mark">m</div><span>Music Masterclass</span></div><a href="/">← back</a></header>
+  <main>
+    <h1>Settings</h1>
+    <p class="sub">Manage your account and the Gemini API key used for lesson generation.</p>
+
+    <section class="panel account" id="account">Loading account…</section>
+
+    <section class="panel">
+      <h2>Gemini API key</h2>
+      <div id="key-status" class="status">Checking key status…</div>
+      <label for="gemini-key" style="margin-top:16px">Paste API key</label>
+      <input id="gemini-key" type="password" autocomplete="off" placeholder="AIza…">
+      <div class="row"><button id="save-key">Save key</button><button id="clear-key" class="ghost">Clear key</button><span id="save-status" class="status"></span></div>
+      <div class="steps" style="margin-top:18px">
+        <details open><summary>1. Create a Google AI Studio key</summary><p>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, choose your Google account, and create an API key.</p></details>
+        <details><summary>2. Enable billing for Gemini 2.5 Pro</summary><p>Free-tier keys can use Flash. Pro usually requires billing/prepay; manage that at <a href="https://aistudio.google.com/billing" target="_blank" rel="noopener">aistudio.google.com/billing</a>.</p></details>
+        <details><summary>3. Paste it here</summary><p>Fermata stores your key encrypted at rest and uses it only for your lesson-processing calls.</p></details>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Preferred model</h2>
+      <label class="radio"><input type="radio" name="model" value="gemini-2.5-pro">Gemini 2.5 Pro (paid; better)<small>Best teacher quality. Typical lesson estimate: about $0.15–$0.50, depending on length and tool calls.</small></label>
+      <label class="radio"><input type="radio" name="model" value="gemini-2.5-flash">Gemini 2.5 Flash (free tier; weaker)<small>Lower cost and often free-tier compatible. Typical lesson estimate: about $0.02–$0.08.</small></label>
+      <div class="row"><button id="save-model">Save model</button><span id="model-status" class="status"></span></div>
+    </section>
+
+    <section class="panel"><button id="sign-out" class="ghost">Sign out</button></section>
+  </main>
+  <script>
+    let profile = null;
+    function fmtSetAt(iso) {
+      if (!iso) return "";
+      const ms = Date.now() - new Date(iso).getTime();
+      const days = Math.max(0, Math.floor(ms / 86400000));
+      if (days === 0) return "today";
+      if (days === 1) return "1 day ago";
+      return `${days} days ago`;
+    }
+    async function api(url, options = {}) {
+      const r = await fetch(url, { ...options, headers: { "Content-Type":"application/json", ...(options.headers || {}) } });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `Request failed (${r.status})`);
+      return data;
+    }
+    function render() {
+      document.getElementById("account").innerHTML = `<strong>${profile.name || profile.email}</strong><br>${profile.email}<br><code>${profile.google_sub}</code>`;
+      const key = document.getElementById("key-status");
+      key.className = `status ${profile.has_gemini_key ? "good" : "warn"}`;
+      key.textContent = profile.has_gemini_key ? `✓ Key on file (set ${fmtSetAt(profile.gemini_key_set_at)})` : "⚠ No key configured";
+      const radio = document.querySelector(`input[name=model][value="${profile.preferred_model || "gemini-2.5-pro"}"]`);
+      if (radio) radio.checked = true;
+    }
+    async function load() {
+      try { profile = await api("/api/me/profile"); render(); }
+      catch (err) { window.location.href = `/auth/login?next=${encodeURIComponent("/settings")}`; }
+    }
+    document.getElementById("save-key").onclick = async () => {
+      const key = document.getElementById("gemini-key").value.trim();
+      if (!key) return document.getElementById("save-status").textContent = "Paste a key first.";
+      profile = await api("/api/me/profile", { method:"PATCH", body: JSON.stringify({ gemini_api_key: key }) });
+      document.getElementById("gemini-key").value = "";
+      document.getElementById("save-status").textContent = "Saved.";
+      render();
+    };
+    document.getElementById("clear-key").onclick = async () => { profile = await api("/api/me/profile", { method:"PATCH", body: JSON.stringify({ clear_gemini_key: true }) }); render(); };
+    document.getElementById("save-model").onclick = async () => {
+      const selected = document.querySelector("input[name=model]:checked");
+      profile = await api("/api/me/profile", { method:"PATCH", body: JSON.stringify({ preferred_model: selected.value }) });
+      document.getElementById("model-status").textContent = "Saved.";
+      render();
+    };
+    document.getElementById("sign-out").onclick = async () => { await fetch("/auth/logout", { method:"POST" }); window.location.href = "/"; };
+    load();
+  </script>
+</body>
+</html>

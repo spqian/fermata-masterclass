@@ -6,11 +6,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from masterclass.auth.encryption import ensure_key_encryption_key
+from masterclass.auth.google_oauth import (
+    clear_session_cookie,
+    complete_google_callback,
+    get_session_user_id,
+    build_login_redirect,
+    set_session_cookie,
+    OAUTH_COOKIE_NAME,
+)
 from masterclass.core.jobs import JobStore, QueuedJobType
 from masterclass.core.masterclasses import MasterclassStore
 from masterclass.core.models import JobState
 from masterclass.core.models import TenantContext
 from masterclass.core.sessions import SessionStore
+from masterclass.core.user_profiles import DEFAULT_MODEL, UserProfileStore
 from masterclass.engine.score_prep import ScorePrepConfig, prepare_score, select_score_pages_for_lesson
 from masterclass.engine.alignment import AlignmentConfig, align_lesson_with_midi, persist_alignment
 from masterclass.engine.analysis import analyze_session, build_evidence_packet
@@ -30,11 +40,11 @@ from masterclass.storage.local import LocalObjectStorage
 from masterclass.toolchain.ffmpeg import FfmpegToolchain
 
 try:
-    from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-    from fastapi.responses import HTMLResponse, Response
+    from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+    from fastapi.responses import HTMLResponse, RedirectResponse, Response
     from pydantic import BaseModel
 except ImportError:
-    BackgroundTasks = Depends = FastAPI = File = Form = Header = HTTPException = HTMLResponse = Response = UploadFile = BaseModel = None
+    BackgroundTasks = Depends = FastAPI = File = Form = Header = HTTPException = Request = HTMLResponse = RedirectResponse = Response = UploadFile = BaseModel = None
 
 
 def _build_storage() -> ObjectStorage:
@@ -83,34 +93,48 @@ def create_app():
         raise RuntimeError("Install API dependencies with: pip install -e .[api]")
 
     _load_dotenv()
+    ensure_key_encryption_key()
     app = FastAPI(title="Music Masterclass API")
     storage = _build_storage()
     masterclasses = MasterclassStore(storage)
     store = SessionStore(storage)
     jobs = JobStore(storage)
+    user_profiles = UserProfileStore(storage)
     static_dir = Path(__file__).resolve().parent / "static"
     score_prep_model = os.environ.get("MASTERCLASS_SCORE_PREP_MODEL", "gemini-2.5-pro")
     midi_find_model = os.environ.get("MASTERCLASS_MIDI_FIND_MODEL", "gemini-2.5-flash")
 
-    def _build_score_prep_provider():
+    def _truthy(value: str | None) -> bool:
+        return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _server_default_key_allowed() -> bool:
+        return _truthy(os.environ.get("ALLOW_SERVER_DEFAULT_KEY"))
+
+    def _preferred_model_for_user(user_id: str) -> str:
+        try:
+            return user_profiles.load(user_id).preferred_model
+        except FileNotFoundError:
+            return DEFAULT_MODEL
+
+    def _gemini_api_key_for_user(user_id: str) -> str:
+        try:
+            user_key = user_profiles.get_gemini_key_plain(user_id)
+        except FileNotFoundError:
+            user_key = None
+        if user_key:
+            return user_key
+        if _server_default_key_allowed():
+            server_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+            if server_key:
+                return server_key
+        raise HTTPException(status_code=402, detail="Add your Gemini API key in Settings to run a lesson")
+
+    def _build_llm_provider_for_user(user_id: str, config=None):
         if os.environ.get("MASTERCLASS_LLM_PROVIDER", "gemini").lower() == "dry-run":
             from masterclass.agent.dry_run import DryRunLlmProvider
             return DryRunLlmProvider()
-        if not os.environ.get("GEMINI_API_KEY"):
-            return None
         from masterclass.agent.gemini import SharedKeyGeminiProvider
-        return SharedKeyGeminiProvider()
-
-    teach_model = os.environ.get("MASTERCLASS_TEACH_MODEL", "gemini-2.5-pro")
-
-    def _build_llm_provider():
-        if os.environ.get("MASTERCLASS_LLM_PROVIDER", "gemini").lower() == "dry-run":
-            from masterclass.agent.dry_run import DryRunLlmProvider
-            return DryRunLlmProvider()
-        if not os.environ.get("GEMINI_API_KEY"):
-            return None
-        from masterclass.agent.gemini import SharedKeyGeminiProvider
-        return SharedKeyGeminiProvider()
+        return SharedKeyGeminiProvider(api_key=_gemini_api_key_for_user(user_id), config=config)
 
     def _downsample_audio_for_teach(ffmpeg: FfmpegToolchain, source_audio_key: str) -> bytes:
         """Compress lesson audio to 16 kHz mono PCM so the inline multimodal call fits.
@@ -300,10 +324,11 @@ def create_app():
                     manifest.metadata["mechanical_comments_state"] = "skipped"
                     store.save(manifest)
 
-                provider = _build_llm_provider()
-                if provider is None:
-                    manifest.metadata["teach_state"] = "skipped"
-                    manifest.metadata["teach_error"] = "GEMINI_API_KEY not configured"
+                try:
+                    provider = _build_llm_provider_for_user(user_id)
+                except HTTPException as exc:
+                    manifest.metadata["teach_state"] = "failed"
+                    manifest.metadata["teach_error"] = str(exc.detail)
                     manifest.state = JobState.READY
                     store.save(manifest)
                     return
@@ -339,7 +364,7 @@ def create_app():
                         provider=provider,
                         score_pages=score_pages,
                         score_layout=score_layout,
-                        config=TeachConfig(model=teach_model),
+                        config=TeachConfig(model=os.environ.get("MASTERCLASS_TEACH_MODEL", _preferred_model_for_user(user_id))),
                     )
                 except Exception as exc:
                     manifest.metadata["teach_state"] = "failed"
@@ -375,10 +400,11 @@ def create_app():
         try:
             ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
             manifest = masterclasses.load_by_id(ctx, masterclass_id)
-            provider = _build_score_prep_provider()
-            if provider is None:
+            try:
+                provider = _build_llm_provider_for_user(user_id)
+            except HTTPException as exc:
                 manifest.metadata["score_prep_state"] = "skipped"
-                manifest.metadata["score_prep_error"] = "GEMINI_API_KEY not configured; set MASTERCLASS_LLM_PROVIDER=dry-run for offline runs."
+                manifest.metadata["score_prep_error"] = str(exc.detail)
                 manifest.metadata["score_prep_updated_at"] = datetime.now(UTC).isoformat()
                 masterclasses.save(manifest)
                 return
@@ -417,10 +443,11 @@ def create_app():
                 manifest.metadata["midi_find_state"] = "skipped_user_upload"
                 masterclasses.save(manifest)
                 return
-            provider = _build_score_prep_provider()
-            if provider is None:
+            try:
+                _build_llm_provider_for_user(user_id)
+            except HTTPException as exc:
                 manifest.metadata["midi_find_state"] = "skipped"
-                manifest.metadata["midi_find_error"] = "GEMINI_API_KEY not configured"
+                manifest.metadata["midi_find_error"] = str(exc.detail)
                 masterclasses.save(manifest)
                 return
 
@@ -429,9 +456,9 @@ def create_app():
                 # so a hung Gemini grounded search doesn't pin the manifest in
                 # "running" state for minutes. The wall-clock concurrent.futures
                 # timeout below is the outer safety net.
-                from masterclass.agent.gemini import SharedKeyGeminiProvider
                 from masterclass.agent.llm import SharedKeyGeminiConfig
-                short_provider = SharedKeyGeminiProvider(
+                short_provider = _build_llm_provider_for_user(
+                    user_id,
                     config=SharedKeyGeminiConfig(request_timeout_sec=30, max_tool_calls=3),
                 )
                 auto_attach_midi_to_masterclass(
@@ -480,19 +507,88 @@ def create_app():
         notes: str | None = None
 
     def tenant_from_header(
+        request: Request,
         x_user_id: str | None = Header(default=None, alias="X-User-Id"),
         user_id: str | None = None,
     ) -> TenantContext:
-        # MVP auth shim. Production replaces this with verified identity claims.
-        # ``user_id`` query param is allowed so plain ``<img src>`` and ``<a href>``
-        # requests (which cannot set headers) still resolve to a tenant.
-        resolved = (x_user_id or user_id or "").strip()
+        # Session identity wins for browsers; X-User-Id/query fallback stays for scripts and CI.
+        resolved = (get_session_user_id(request) or x_user_id or user_id or "").strip()
         if not resolved:
-            raise HTTPException(status_code=401, detail="X-User-Id header or user_id query param required")
+            raise HTTPException(status_code=401, detail="Sign in or provide X-User-Id header")
         try:
             return TenantContext(tenant_id=resolved, user_id=resolved)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+    @app.get("/auth/login")
+    def auth_login(request: Request, next: str | None = "/"):
+        return build_login_redirect(request, next)
+
+    @app.get("/auth/callback", name="auth_callback")
+    async def auth_callback(request: Request):
+        identity, next_url = await complete_google_callback(request)
+        profile = user_profiles.upsert_oauth_user(
+            google_sub=identity.google_sub,
+            email=identity.email,
+            display_name=identity.display_name,
+        )
+        response = RedirectResponse(next_url or "/", status_code=302)
+        set_session_cookie(response, request, profile.google_sub)
+        response.delete_cookie(OAUTH_COOKIE_NAME, path="/")
+        return response
+
+    @app.post("/auth/logout")
+    def auth_logout(request: Request):
+        response = RedirectResponse("/", status_code=303)
+        clear_session_cookie(response, request)
+        return response
+
+    @app.get("/auth/me")
+    def auth_me(request: Request) -> dict:
+        user_id = get_session_user_id(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="not signed in")
+        try:
+            return user_profiles.load(user_id).public_json()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=401, detail="profile not found") from exc
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page() -> HTMLResponse:
+        return HTMLResponse(
+            (static_dir / "settings.html").read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        )
+
+    @app.get("/api/me/profile")
+    def get_my_profile(ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        try:
+            return user_profiles.load(ctx.user_id).public_json()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=401, detail="Sign in with Google to manage your profile") from exc
+
+    class ProfilePatch(BaseModel):
+        gemini_api_key: str | None = None
+        clear_gemini_key: bool = False
+        preferred_model: str | None = None
+
+    @app.patch("/api/me/profile")
+    def patch_my_profile(body: ProfilePatch, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        try:
+            profile = user_profiles.load(ctx.user_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=401, detail="Sign in with Google to manage your profile") from exc
+        try:
+            if body.preferred_model is not None:
+                profile = user_profiles.set_preferred_model(ctx.user_id, body.preferred_model)
+            if body.clear_gemini_key:
+                profile = user_profiles.clear_gemini_key(ctx.user_id)
+            if body.gemini_api_key is not None and body.gemini_api_key.strip():
+                profile = user_profiles.set_gemini_key(ctx.user_id, body.gemini_api_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return profile.public_json()
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

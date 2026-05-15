@@ -13,7 +13,8 @@ This folder documents the v2 production app: what it does, how it's built, where
 | [`tooling.md`](./tooling.md) | Bundled toolchain (Python, ffmpeg, Audiveris, JRE), MIDI auto-finder |
 | [`data-model.md`](./data-model.md) | Every persistent JSON shape: manifests + engine artifacts |
 | [`extending.md`](./extending.md) | How to add new instruments, agent tools, score sources, pipeline stages |
-| [`operations.md`](./operations.md) | How to run, environment variables, debugging, repair scripts |
+| [`operations.md`](./operations.md) | How to run, environment variables, authentication, debugging, repair scripts |
+| [`byo-key.md`](./byo-key.md) | BYO Gemini API key model, billing, model choices, encryption |
 | [`limitations.md`](./limitations.md) | Known issues, hacks, design tradeoffs, what to invest in next |
 | [`decisions.md`](./decisions.md) | Decision log: meaningful design choices and what we learned |
 | [`roadmap.md`](./roadmap.md) | What's next: auth, BYO Gemini key, chat-with-teacher, Azure hosting |
