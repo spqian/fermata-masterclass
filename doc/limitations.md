@@ -97,7 +97,7 @@ For a v3 that targets multi-user / production deployment, this would need:
 
 ## Test coverage
 
-Many `scripts/test_*.py` exist but they're not run as a test suite — no `pytest`, no CI. They're more like "smoke runners I used to verify a change works on real data."
+There is no committed test suite. The author's working tree has ~30 one-off `scripts/test_*.py` smoke runners (each tied to a specific local recording / IMSLP download) — these are gitignored because the paths are hardcoded. There is no `pytest`, no CI.
 
 What would help:
 - Unit tests for `engine/barline_detection.py` (deterministic, no LLM)

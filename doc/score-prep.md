@@ -75,7 +75,7 @@ Audiveris's MusicXML is parsed with `lxml`. We extract:
 
 ## Visual barline detection (`engine/barline_detection.py`)
 
-The standalone CV pass that's the actual layout source-of-truth. **Algo A** ("Algorithm A") was the winner of a 4-algorithm bake-off (`scripts/barline_detection_prototype.py`):
+The standalone CV pass that's the actual layout source-of-truth. **Algo A** ("Algorithm A") was the winner of a 4-algorithm bake-off (horizontal+vertical projection vs Hough transform vs connected components vs LSD; the prototype script is not committed):
 
 ```
 For each page raster:

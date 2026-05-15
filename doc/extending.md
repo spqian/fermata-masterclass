@@ -204,7 +204,7 @@ def _build_llm_provider() -> LlmProvider | None:
 - **No new pip dependencies without strong justification.** The bundled Python is a curated set; adding a new dep means re-bundling.
 - **Pure Python preferred.** No Cython, no C extensions besides what's already in librosa/numpy.
 - **One module = one responsibility.** `engine/X.py` should have a clear noun-phrase purpose.
-- **Tests under `scripts/test_*.py`.** They're not pytest yet but they're invocable individually with `tools\python\python.exe`.
+- **Smoke scripts not committed.** The author's working tree contains many one-off `scripts/test_*.py` smoke runners with hardcoded local paths; they are gitignored. If you write similar one-offs, drop them in `scripts/` and they'll be ignored automatically. There is no `pytest` suite yet — see `doc/limitations.md`.
 - **No frameworks for the UI.** Plain HTML/CSS/JS in 2 files. New routes go through the existing hash-router in `ingest.html`.
 - **Storage keys are tenant-scoped.** Never write to absolute paths; always go through `store.artifact_key` or `session_key` helpers.
 - **Manifest metadata is free-form.** Use it for state tracking, diagnostic info, anything you'd want to query later. Don't overload schema fields.
