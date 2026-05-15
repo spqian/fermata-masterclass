@@ -16,6 +16,7 @@ This folder documents the v2 production app: what it does, how it's built, where
 | [`operations.md`](./operations.md) | How to run, environment variables, debugging, repair scripts |
 | [`limitations.md`](./limitations.md) | Known issues, hacks, design tradeoffs, what to invest in next |
 | [`decisions.md`](./decisions.md) | Decision log: meaningful design choices and what we learned |
+| [`roadmap.md`](./roadmap.md) | What's next: auth, BYO Gemini key, chat-with-teacher, Azure hosting |
 
 ## TL;DR
 
