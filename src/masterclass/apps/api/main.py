@@ -1354,6 +1354,35 @@ def create_app():
             raise HTTPException(status_code=404, detail="lesson or conversation not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            # Gemini retried-and-failed errors surface as RuntimeError from
+            # agent/gemini.py:_send. Map peak-demand 503s to a friendly UI
+            # message instead of an opaque 500.
+            msg = str(exc)
+            if "503" in msg or "UNAVAILABLE" in msg or "high demand" in msg.lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "reply": (
+                            "Gemini is overloaded right now (peak demand). "
+                            "This usually clears within a few minutes — please try again shortly."
+                        ),
+                        "usage": chat_usage_dict(None),
+                    },
+                ) from exc
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "reply": (
+                            "Your Gemini API quota has been exceeded. "
+                            "Wait a minute and try again, or check your billing tier at "
+                            "https://aistudio.google.com/apikey."
+                        ),
+                        "usage": chat_usage_dict(None),
+                    },
+                ) from exc
+            raise
 
     @app.get("/lessons/{session_id}/chat")
     def lesson_chat_list(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> list[dict]:

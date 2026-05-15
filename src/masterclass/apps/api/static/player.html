@@ -1122,16 +1122,29 @@
       appendChatMessage("user", message);
       const typing = document.createElement("div");
       typing.className = "chat-msg teacher";
-      typing.innerHTML = `<span class="gemini">✦</span>Thinking…`;
+      typing.innerHTML = `<span class="gemini">✦</span><span class="typing-text">Thinking…</span>`;
       chatMessages.appendChild(typing);
       chatMessages.scrollTop = chatMessages.scrollHeight;
+      const typingText = typing.querySelector(".typing-text");
+      const thinkingStart = Date.now();
+      const thinkingTimer = setInterval(() => {
+        const sec = Math.floor((Date.now() - thinkingStart) / 1000);
+        let label;
+        if (sec < 20) label = `Thinking… ${sec}s`;
+        else if (sec < 60) label = `Thinking… ${sec}s — agentic responses can take 30-90s`;
+        else if (sec < 120) label = `Thinking… ${sec}s — still working (Gemini may be slow during peak hours)`;
+        else label = `Thinking… ${sec}s — this is unusually long; you can keep waiting or refresh`;
+        if (typingText) typingText.textContent = label;
+      }, 1000);
       try {
         const payload = await postJson(`/lessons/${SESSION_ID}/chat`, { message, conversation_id: chatConversationId });
+        clearInterval(thinkingTimer);
         typing.remove();
         chatConversationId = payload.conversation_id || chatConversationId;
         appendChatMessage("teacher", payload.reply || "", { tool_calls: payload.tool_calls || [], usage: payload.usage });
         chatStatus.textContent = "ready";
       } catch (error) {
+        clearInterval(thinkingTimer);
         typing.remove();
         appendChatMessage("teacher", error.message, { error: true, usage: error.payload && error.payload.usage });
         chatStatus.textContent = error.status || "error";
