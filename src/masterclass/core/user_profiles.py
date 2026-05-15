@@ -18,7 +18,7 @@ def _now() -> str:
 
 def _safe_google_sub(google_sub: str) -> str:
     value = (google_sub or "").strip()
-    if not value or "/" in value or "\\" in value or ".." in value:
+    if not value or "/" in value or "\\" in value or ":" in value or ".." in value:
         raise ValueError("invalid Google subject")
     return value
 

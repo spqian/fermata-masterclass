@@ -49,7 +49,7 @@ from masterclass.storage.local import LocalObjectStorage
 from masterclass.toolchain.ffmpeg import FfmpegToolchain
 
 try:
-    from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+    from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
     from fastapi.responses import HTMLResponse, RedirectResponse, Response
     from pydantic import BaseModel
 except ImportError:
@@ -60,6 +60,11 @@ if BaseModel is not None:
     class ChatRequest(BaseModel):
         message: str
         conversation_id: str | None = None
+
+    class ProfilePatch(BaseModel):
+        gemini_api_key: str | None = None
+        clear_gemini_key: bool = False
+        preferred_model: str | None = None
 
 
 def _build_storage() -> ObjectStorage:
@@ -559,6 +564,48 @@ def create_app():
         clear_session_cookie(response, request)
         return response
 
+    @app.get("/auth/dev-login")
+    def auth_dev_login(
+        request: Request,
+        as_: str = Query("dev@fermata.local", alias="as"),
+        next: str = "/",
+    ):
+        """Dev-only sign-in bypass — never enabled in production.
+
+        Accepts an arbitrary email via the `as_` query param (FastAPI strips the
+        trailing underscore so the URL is `?as=you@example.com`) and seeds a
+        UserProfile + session cookie equivalent to a real Google callback.
+
+        Gated by MASTERCLASS_DEV_LOGIN=true. With MASTERCLASS_PRODUCTION=true,
+        the endpoint always returns 404 even if the dev flag is set.
+        """
+        if os.environ.get("MASTERCLASS_PRODUCTION", "").lower() == "true":
+            raise HTTPException(status_code=404, detail="Not Found")
+        if os.environ.get("MASTERCLASS_DEV_LOGIN", "").lower() != "true":
+            raise HTTPException(
+                status_code=404,
+                detail="Dev login is disabled. Set MASTERCLASS_DEV_LOGIN=true in .env to enable for local testing.",
+            )
+        email = (as_ or "").strip().lower()
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="?as= must be an email-like string")
+        # Use a stable, deterministic id so re-logins as the same address
+        # don't fork into multiple profiles. The "dev-" prefix keeps it from
+        # ever colliding with a real Google `sub` (which is numeric).
+        # Note: we use "-" (not ":") because Windows treats ":" in filenames
+        # as an Alternate Data Stream separator.
+        fake_sub = f"dev-{email}"
+        display = email.split("@", 1)[0]
+        profile = user_profiles.upsert_oauth_user(
+            google_sub=fake_sub,
+            email=email,
+            display_name=display,
+        )
+        target = next if (next or "").startswith("/") else "/"
+        response = RedirectResponse(target, status_code=302)
+        set_session_cookie(response, request, profile.google_sub)
+        return response
+
     @app.get("/auth/me")
     def auth_me(request: Request) -> dict:
         user_id = get_session_user_id(request)
@@ -583,13 +630,11 @@ def create_app():
         except FileNotFoundError as exc:
             raise HTTPException(status_code=401, detail="Sign in with Google to manage your profile") from exc
 
-    class ProfilePatch(BaseModel):
-        gemini_api_key: str | None = None
-        clear_gemini_key: bool = False
-        preferred_model: str | None = None
-
     @app.patch("/api/me/profile")
-    def patch_my_profile(body: ProfilePatch, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+    def patch_my_profile(
+        body: ProfilePatch = Body(...),
+        ctx: TenantContext = Depends(tenant_from_header),
+    ) -> dict:
         try:
             profile = user_profiles.load(ctx.user_id)
         except FileNotFoundError as exc:
