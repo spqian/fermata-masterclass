@@ -1,0 +1,45 @@
+# Local storage and generated artifacts
+local_adls/
+sessions/
+logs/
+*.log
+
+# Bundled toolchain (large binaries — install via scripts/install_tools.ps1)
+tools/jre/
+tools/audiveris/
+tools/ffmpeg/
+tools/python/
+tools/downloads/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Local scratch / one-off scripts (have hardcoded local paths, PII, etc.)
+# Only the explicitly-allowed scripts below are tracked.
+scripts/*
+!scripts/install_tools.ps1
+!scripts/rerun_teacher.py
+!scripts/rerun_hmm_align.py
+!scripts/rebuild_score_map.py
+!scripts/README.md
+
+# Generated / scratch
+scripts/__pycache__/
+scripts/barline_outputs/
+
+# Secrets
+.env
+.env.local
+*.key
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

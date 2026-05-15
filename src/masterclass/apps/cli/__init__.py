@@ -1,0 +1,2 @@
+"""Local CLI app."""
+

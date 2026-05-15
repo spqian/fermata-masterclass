@@ -1,0 +1,970 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Music Masterclass</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d12;
+      --panel: rgba(22, 24, 32, 0.94);
+      --panel-edge: rgba(255, 255, 255, 0.06);
+      --ink: #f5f1e8;
+      --ink-soft: #c5c0b3;
+      --ink-mute: #7a7669;
+      --gold: #c9a96a;
+      --gold-soft: #8a7654;
+      --rule: rgba(201, 169, 106, 0.22);
+      --danger: #d97a6c;
+      --accent: #a4b8d6;
+      --good: #8ec585;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Inter", system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    body {
+      background:
+        radial-gradient(900px 600px at 12% -10%, rgba(201, 169, 106, 0.12), transparent 70%),
+        radial-gradient(800px 700px at 100% 110%, rgba(80, 100, 160, 0.18), transparent 70%),
+        linear-gradient(180deg, #0b0d12 0%, #0a0c11 100%);
+    }
+
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--panel-edge);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 12px;
+      cursor: pointer;
+    }
+    .brand .mark {
+      width: 28px; height: 28px;
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      border-radius: 4px;
+      display: grid; place-items: center;
+      font-size: 13px; font-weight: 700;
+    }
+    .brand .name { font-size: 14px; font-weight: 600; }
+    .brand .name em { color: var(--gold); font-style: normal; }
+    .topbar .meta {
+      display: flex; gap: 18px; align-items: center;
+      font-size: 12px; color: var(--ink-mute);
+    }
+    .topbar .meta input {
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--gold-soft);
+      color: var(--ink);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      padding: 4px 6px;
+      width: 110px;
+      outline: none;
+    }
+
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 32px 28px 80px;
+    }
+
+    .breadcrumbs {
+      display: flex; gap: 6px; align-items: center;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ink-mute);
+      margin-bottom: 14px;
+    }
+    .breadcrumbs a { color: var(--ink-soft); text-decoration: none; }
+    .breadcrumbs a:hover { color: var(--gold); }
+    .breadcrumbs .sep { color: var(--gold-soft); }
+    .breadcrumbs .current { color: var(--gold); }
+
+    h1.page-title {
+      font-size: 28px;
+      font-weight: 700;
+      margin: 0 0 6px;
+      color: var(--ink);
+      letter-spacing: -0.01em;
+    }
+    p.page-sub {
+      color: var(--ink-soft);
+      font-size: 15px;
+      line-height: 1.5;
+      margin: 0 0 28px;
+    }
+
+    .card-list {
+      display: grid;
+      gap: 14px;
+    }
+    .picker-card {
+      display: grid;
+      grid-template-columns: 48px 1fr auto;
+      gap: 18px;
+      align-items: center;
+      padding: 22px 24px;
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: border-color 160ms ease, transform 100ms ease;
+    }
+    .picker-card:hover {
+      border-color: rgba(201, 169, 106, 0.5);
+    }
+    .picker-card:active { transform: translateY(1px); }
+    .picker-card .glyph {
+      width: 48px; height: 48px;
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      border-radius: 6px;
+      display: grid; place-items: center;
+      font-size: 22px; font-weight: 700;
+    }
+    .picker-card .body .title {
+      font-size: 17px; font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .picker-card .body .sub {
+      font-size: 13px; color: var(--ink-mute);
+    }
+    .picker-card .arrow {
+      color: var(--gold);
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .field {
+      display: flex; flex-direction: column; gap: 8px;
+      margin-bottom: 18px;
+    }
+    .field label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      font-weight: 600;
+    }
+    .field input[type=text],
+    .field input[type=number],
+    .field input[type=url],
+    .field input:not([type]),
+    .field select,
+    .field textarea {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      color: var(--ink);
+      font-family: "Inter", sans-serif;
+      font-size: 14px;
+      padding: 10px 12px;
+      transition: border-color 160ms ease, background 160ms ease;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus {
+      outline: none;
+      border-color: var(--gold);
+      background: rgba(201, 169, 106, 0.06);
+    }
+    .field textarea { min-height: 90px; resize: vertical; }
+    .field .hint { font-size: 12px; color: var(--ink-mute); line-height: 1.5; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+    .file-drop {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 16px;
+      border: 1px dashed rgba(201, 169, 106, 0.4);
+      border-radius: 4px;
+      background: rgba(201, 169, 106, 0.04);
+      cursor: pointer;
+      position: relative;
+    }
+    .file-drop input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer;
+    }
+    .file-drop .ico {
+      color: var(--gold); font-size: 16px; font-weight: 700;
+    }
+    .file-drop .text { flex: 1; font-size: 13px; color: var(--ink-soft); font-weight: 500; }
+    .file-drop .text small { display: block; color: var(--ink-mute); font-size: 11px; margin-top: 3px; font-weight: 400; }
+    .file-drop.has-file { border-style: solid; border-color: var(--gold); background: rgba(201, 169, 106, 0.1); }
+
+    button.primary {
+      background: var(--gold);
+      color: #1a1610;
+      border: 0;
+      border-radius: 4px;
+      padding: 12px 24px;
+      font-family: "Inter", sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary:hover { background: #dab87a; }
+    button.primary:disabled { cursor: wait; opacity: 0.55; background: var(--gold-soft); }
+    button.ghost {
+      background: transparent;
+      color: var(--ink-soft);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 4px;
+      padding: 10px 18px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button.ghost:hover { border-color: var(--gold); color: var(--ink); }
+
+    .actions-row {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 14px;
+      margin-top: 28px;
+      padding-top: 20px;
+      border-top: 1px solid var(--rule);
+    }
+    .actions-right { display: flex; gap: 10px; }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: 6px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
+    }
+    .panel h2 {
+      margin: 0 0 14px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .status-line {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .status-line.ready { background: rgba(122,178,117,0.10); color: var(--good); }
+    .status-line.running, .status-line.queued { background: rgba(164,184,214,0.10); color: var(--accent); }
+    .status-line.failed, .status-line.not_found { background: rgba(217,122,108,0.10); color: var(--danger); }
+    .status-line.skipped, .status-line.skipped_user_upload { background: rgba(255,255,255,0.04); color: var(--ink-mute); }
+    .status-line .icon {
+      width: 18px; height: 18px; display: grid; place-items: center;
+      font-size: 11px; font-weight: 700;
+    }
+    .status-line .icon.spinner {
+      border: 2px solid rgba(164, 184, 214, 0.3);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status-line .label { flex: 1; }
+    .status-line .meta { color: var(--ink-mute); font-family: "JetBrains Mono", monospace; font-size: 11px; }
+
+    .lesson-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 16px;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+    .lesson-row .when { color: var(--ink-mute); font-size: 12px; font-family: "JetBrains Mono", monospace; }
+    .lesson-row .body .title { font-weight: 600; }
+    .lesson-row .body .notes { color: var(--ink-mute); font-size: 12px; margin-top: 2px; }
+    .lesson-row .badge {
+      font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 10px; font-weight: 600;
+    }
+    .lesson-row .badge.ready { background: rgba(122,178,117,0.15); color: var(--good); }
+    .lesson-row .badge.failed { background: rgba(217,122,108,0.15); color: var(--danger); }
+    .lesson-row .badge.processing { background: rgba(164,184,214,0.15); color: var(--accent); }
+    .lesson-row .badge.uploaded { background: rgba(255,255,255,0.06); color: var(--ink-mute); }
+
+    .add-lesson-cta {
+      width: 100%;
+      padding: 28px;
+      border: 1px dashed rgba(201, 169, 106, 0.4);
+      background: rgba(201, 169, 106, 0.04);
+      color: var(--gold);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      text-align: center;
+      transition: border-color 160ms ease, background 160ms ease;
+    }
+    .add-lesson-cta:hover {
+      border-color: var(--gold);
+      background: rgba(201, 169, 106, 0.10);
+    }
+
+    .progress-stack { display: grid; gap: 8px; }
+    .progress-bar-shell {
+      width: 100%; height: 8px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .progress-bar-shell .fill {
+      height: 100%;
+      background: var(--gold);
+      transition: width 200ms ease;
+    }
+
+    .empty {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--ink-mute);
+      font-size: 14px;
+      border: 1px dashed rgba(255,255,255,0.08);
+      border-radius: 6px;
+    }
+
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      max-width: 360px;
+      padding: 14px 18px;
+      border-radius: 4px;
+      background: rgba(22, 24, 32, 0.98);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--ink-soft);
+      font-size: 13px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+      display: none;
+    }
+    .toast.error { border-color: var(--danger); color: var(--danger); }
+    .toast.show { display: block; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="brand">
+      <div class="mark">m</div>
+      <span class="name">Music <em>Masterclass</em></span>
+    </div>
+    <div class="meta">
+      <label>user <input id="user-id" value="pqian" autocomplete="off"></label>
+    </div>
+  </header>
+
+  <main id="app"><!-- view rendered here --></main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    // ---------- helpers ----------
+    const userInput = document.getElementById("user-id");
+    const app = document.getElementById("app");
+    const toastEl = document.getElementById("toast");
+    document.getElementById("brand").addEventListener("click", () => goto("/"));
+
+    function userId() { return (userInput.value || "").trim() || "pqian"; }
+    function uquery() { return `?user_id=${encodeURIComponent(userId())}`; }
+    async function fetchJson(url, options = {}) {
+      const r = await fetch(url, {
+        ...options,
+        headers: { "X-User-Id": userId(), ...(options.headers || {}) },
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `Request failed (${r.status})`);
+      return data;
+    }
+    function uploadWithProgress(url, formData, onProgress) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        xhr.setRequestHeader("X-User-Id", userId());
+        if (xhr.upload && onProgress) xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) onProgress(e.loaded, e.total);
+        });
+        xhr.onload = () => {
+          let payload = {};
+          try { payload = JSON.parse(xhr.responseText || "{}"); } catch {}
+          if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
+          else reject(new Error(payload.detail || `Request failed (${xhr.status})`));
+        };
+        xhr.onerror = () => reject(new Error("Network error"));
+        xhr.send(formData);
+      });
+    }
+    function escapeHtml(s) {
+      return String(s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+    function formatDate(iso) {
+      if (!iso) return "—";
+      try {
+        return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      } catch { return iso; }
+    }
+    function showToast(msg, isError = false) {
+      toastEl.textContent = msg;
+      toastEl.classList.toggle("error", isError);
+      toastEl.classList.add("show");
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toastEl.classList.remove("show"), 4500);
+    }
+
+    function goto(path) {
+      window.location.hash = "#" + path;
+    }
+    function currentRoute() {
+      const raw = (window.location.hash || "#/").slice(1);
+      const parts = raw.split("/").filter(Boolean);
+      return parts;
+    }
+
+    // ---------- routing ----------
+    const routes = [
+      { match: (p) => p.length === 0, view: viewLanding },
+      { match: (p) => p.length === 1 && p[0] === "new", view: viewNewClass },
+      { match: (p) => p.length === 2 && p[0] === "class", view: (p) => viewClassHome(p[1]) },
+      { match: (p) => p.length === 3 && p[0] === "class" && p[2] === "lesson", view: (p) => viewNewLesson(p[1]) },
+      { match: (p) => p.length === 5 && p[0] === "class" && p[2] === "lesson" && p[4] === "processing", view: (p) => viewProcessing(p[1], p[3]) },
+    ];
+    let stopPolling = null;
+    async function render() {
+      if (stopPolling) { stopPolling(); stopPolling = null; }
+      const parts = currentRoute();
+      const route = routes.find(r => r.match(parts));
+      app.innerHTML = `<div class="empty">Loading…</div>`;
+      try {
+        if (route) await route.view(parts);
+        else app.innerHTML = `<div class="empty">Page not found. <a href="#/" style="color:var(--gold)">Go home</a></div>`;
+      } catch (err) {
+        app.innerHTML = `<div class="empty" style="color:var(--danger)">${escapeHtml(err.message)}</div>`;
+      }
+    }
+    window.addEventListener("hashchange", render);
+    userInput.addEventListener("change", render);
+
+    // ---------- view: landing ----------
+    async function viewLanding() {
+      const classes = await fetchJson("/masterclasses").catch(() => []);
+      app.innerHTML = `
+        <div class="breadcrumbs"><span class="current">Home</span></div>
+        <h1 class="page-title">What would you like to do?</h1>
+        <p class="page-sub">Each masterclass is one piece you're working on, with all the lessons that go with it.</p>
+        <div class="card-list">
+          <div class="picker-card" id="opt-new">
+            <div class="glyph">+</div>
+            <div class="body">
+              <div class="title">Start a new masterclass</div>
+              <div class="sub">Begin work on a piece you haven't studied here yet.</div>
+            </div>
+            <div class="arrow">→</div>
+          </div>
+          <div class="picker-card" id="opt-continue">
+            <div class="glyph">↻</div>
+            <div class="body">
+              <div class="title">Continue a masterclass</div>
+              <div class="sub">${classes.length} ${classes.length === 1 ? "class" : "classes"} in your library.</div>
+            </div>
+            <div class="arrow">→</div>
+          </div>
+        </div>
+      `;
+      document.getElementById("opt-new").onclick = () => goto("/new");
+      document.getElementById("opt-continue").onclick = () => {
+        if (!classes.length) {
+          showToast("No masterclasses yet — start a new one first.");
+          return;
+        }
+        renderContinueList(classes);
+      };
+    }
+
+    function renderContinueList(classes) {
+      app.innerHTML = `
+        <div class="breadcrumbs">
+          <a href="#/">Home</a><span class="sep">·</span><span class="current">Continue</span>
+        </div>
+        <h1 class="page-title">Pick a masterclass to continue</h1>
+        <p class="page-sub">Click a piece to open its class home.</p>
+        <div class="card-list">
+          ${classes.map(c => {
+            const m = c.masterclass.masterclass_id;
+            const sub = `${c.lessons.length} lesson${c.lessons.length === 1 ? "" : "s"}${c.movement ? " · " + escapeHtml(c.movement) : ""}`;
+            return `
+              <div class="picker-card" data-id="${m}">
+                <div class="glyph">♪</div>
+                <div class="body">
+                  <div class="title">${escapeHtml(c.piece_name)}</div>
+                  <div class="sub">${sub}</div>
+                </div>
+                <div class="arrow">→</div>
+              </div>`;
+          }).join("")}
+        </div>
+        <div class="actions-row">
+          <button type="button" class="ghost" onclick="goto('/')">← Back</button>
+          <span></span>
+        </div>
+      `;
+      for (const card of app.querySelectorAll(".picker-card[data-id]")) {
+        card.onclick = () => goto(`/class/${card.dataset.id}`);
+      }
+    }
+
+    // ---------- view: new class ----------
+    async function viewNewClass() {
+      app.innerHTML = `
+        <div class="breadcrumbs">
+          <a href="#/">Home</a><span class="sep">·</span><span class="current">New masterclass</span>
+        </div>
+        <h1 class="page-title">Start a new masterclass</h1>
+        <p class="page-sub">Tell us what piece you're working on. We'll fetch a reference recording for alignment automatically.</p>
+        <form id="new-class-form" class="panel">
+          <div class="field">
+            <label for="piece_name">Piece</label>
+            <input id="piece_name" name="piece_name" type="text" placeholder="J. S. Bach — Sonata No. 1 in G minor, Adagio" required autofocus>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="movement">Movement (optional)</label>
+              <input id="movement" name="movement" type="text" placeholder="Adagio">
+            </div>
+            <div class="field">
+              <label for="instrument_profile">Instrument</label>
+              <select id="instrument_profile" name="instrument_profile">
+                <option value="">Auto-detect from score</option>
+                <option value="piano">Solo piano</option>
+                <option value="violin_solo">Solo violin</option>
+                <option value="viola_solo">Solo viola</option>
+                <option value="cello_solo">Solo cello</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Score (PDF)</label>
+            <label class="file-drop">
+              <span class="ico">P</span>
+              <span class="text">Attach the score PDF<small>required · IMSLP scans work great</small></span>
+              <input type="file" name="score_file" accept="application/pdf,.pdf" required>
+            </label>
+          </div>
+          <div class="field">
+            <label>Reference recording (MIDI, optional)</label>
+            <label class="file-drop">
+              <span class="ico">M</span>
+              <span class="text">Attach a MIDI<small>optional · we'll search the web for one if you skip</small></span>
+              <input type="file" name="midi_file" accept=".mid,.midi,audio/midi">
+            </label>
+          </div>
+          <div class="field">
+            <label for="notes">Notes (optional)</label>
+            <textarea id="notes" name="notes" placeholder="Anything the teacher should remember about this piece across all your lessons."></textarea>
+          </div>
+          <div class="actions-row">
+            <button type="button" class="ghost" onclick="goto('/')">← Back</button>
+            <div class="actions-right">
+              <span id="new-class-status" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink-mute)"></span>
+              <button type="submit" class="primary">Open masterclass →</button>
+            </div>
+          </div>
+        </form>
+      `;
+      bindFileDrops(app);
+      document.getElementById("new-class-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const submit = form.querySelector("button[type=submit]");
+        const status = document.getElementById("new-class-status");
+        const data = cleanFormData(form);
+        if (!(data.get("score_file") instanceof File)) {
+          status.textContent = "Attach a score PDF first.";
+          return;
+        }
+        submit.disabled = true;
+        status.textContent = "Uploading score…";
+        try {
+          const created = await uploadWithProgress("/masterclasses", data, (loaded, total) => {
+            const pct = total ? Math.round((loaded / total) * 100) : 0;
+            status.textContent = `Uploading score… ${pct}%`;
+          });
+          status.textContent = "Created.";
+          goto(`/class/${created.masterclass.masterclass_id}`);
+        } catch (err) {
+          status.textContent = err.message;
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    }
+
+    function cleanFormData(form) {
+      const data = new FormData(form);
+      for (const [k, v] of [...data.entries()]) {
+        if (typeof v === "string" && v.trim() === "") data.delete(k);
+        if (v instanceof File && v.size === 0 && v.name === "") data.delete(k);
+      }
+      return data;
+    }
+    function bindFileDrops(scope) {
+      for (const drop of scope.querySelectorAll(".file-drop")) {
+        const input = drop.querySelector("input[type=file]");
+        if (!input) continue;
+        input.addEventListener("change", () => {
+          const file = input.files && input.files[0];
+          const text = drop.querySelector(".text");
+          if (file) {
+            drop.classList.add("has-file");
+            text.innerHTML = `${escapeHtml(file.name)}<small>${(file.size / 1024).toFixed(1)} KB · attached</small>`;
+          } else {
+            drop.classList.remove("has-file");
+          }
+        });
+      }
+    }
+
+    // ---------- view: class home ----------
+    async function viewClassHome(masterclassId) {
+      const klass = await fetchJson(`/masterclasses/${masterclassId}`);
+      const lessons = await fetchJson(`/masterclasses/${masterclassId}/lessons`).catch(() => []);
+      const prep = await fetchJson(`/masterclasses/${masterclassId}/score-prep`).catch(() => ({}));
+      const midi = await fetchJson(`/masterclasses/${masterclassId}/midi-find`).catch(() => ({}));
+
+      const pieceLine = [klass.movement, klass.instrument_profile?.replace("_", " ")].filter(Boolean).join(" · ") || "No movement set";
+      app.innerHTML = `
+        <div class="breadcrumbs">
+          <a href="#/">Home</a><span class="sep">·</span>
+          <a href="javascript:void(0)" onclick="(async()=>{const cs=await fetchJson('/masterclasses');renderContinueList(cs);})()">Library</a>
+          <span class="sep">·</span><span class="current">${escapeHtml(klass.piece_name)}</span>
+        </div>
+        <h1 class="page-title">${escapeHtml(klass.piece_name)}</h1>
+        <p class="page-sub">${escapeHtml(pieceLine)}</p>
+
+        <div class="panel">
+          <h2>Reference material</h2>
+          <div id="ref-status"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Lessons</h2>
+          <div id="lessons-list"></div>
+          <div style="margin-top:14px">
+            <button class="add-lesson-cta" onclick="goto('/class/${masterclassId}/lesson')">+ Add a new lesson</button>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button type="button" class="ghost" onclick="goto('/')">← Home</button>
+          <span></span>
+        </div>
+      `;
+      renderRefStatus(masterclassId, klass, prep, midi);
+      renderLessonsList(masterclassId, lessons);
+
+      // Poll if anything is still working.
+      const refIsWorking = (s) => s === "queued" || s === "running";
+      const anyLessonWorking = lessons.some(l => l.state !== "ready" && l.state !== "failed");
+      if (refIsWorking(prep.state) || refIsWorking(midi.state) || anyLessonWorking) {
+        const handle = setTimeout(render, 4000);
+        stopPolling = () => clearTimeout(handle);
+      }
+    }
+
+    const FRIENDLY_REF = {
+      score_prep: {
+        running: "Reading the score…",
+        queued: "Reading the score…",
+        ready: (snap) => `Score ready — ${snap.page_count || "?"} pages, music starts on page ${snap.first_music_page || "?"}.`,
+        failed: "Couldn't read the score. Re-uploading the PDF may help.",
+        skipped: "Score reading skipped (no AI key).",
+        not_run: "Score not yet read.",
+      },
+      midi_find: {
+        running: "Looking up a reference recording online…",
+        queued: "Looking up a reference recording online…",
+        ready: (snap) => `Reference found from ${snap.midi_source || "the web"}.`,
+        not_found: "No reference recording found online — note timing may be approximate.",
+        skipped_user_upload: "Using your uploaded reference recording.",
+        skipped: "Reference search skipped (no AI key).",
+        failed: "Reference search failed.",
+        not_run: "Reference not yet looked up.",
+      },
+    };
+
+    function renderRefStatus(masterclassId, klass, prep, midi) {
+      const refBox = document.getElementById("ref-status");
+      const items = [];
+      const prepState = prep.state || "not_run";
+      const prepLabel = FRIENDLY_REF.score_prep[prepState];
+      items.push(refStatusLine(prepState, typeof prepLabel === "function" ? prepLabel(prep) : prepLabel, prep.substage));
+
+      const midiState = midi.state || "not_run";
+      const midiLabel = FRIENDLY_REF.midi_find[midiState];
+      items.push(refStatusLine(midiState, typeof midiLabel === "function" ? midiLabel(midi) : midiLabel));
+
+      const refsActions = [];
+      if (midi.state === "not_found" || midi.state === "failed") {
+        refsActions.push(`<button class="ghost" onclick="rerunMidi('${masterclassId}')">Search again</button>`);
+      }
+      refBox.innerHTML = items.join("") + (refsActions.length ? `<div style="margin-top:10px;display:flex;gap:8px">${refsActions.join("")}</div>` : "");
+    }
+
+    function refStatusLine(state, label, substage) {
+      const isRunning = state === "queued" || state === "running";
+      const icon = isRunning ? `<span class="icon spinner"></span>` :
+        state === "ready" ? `<span class="icon">✓</span>` :
+        state === "failed" || state === "not_found" ? `<span class="icon">✗</span>` :
+        `<span class="icon">·</span>`;
+      const sub = isRunning && substage ? `<span class="meta">${escapeHtml(substage)}</span>` : "";
+      return `<div class="status-line ${state}">${icon}<span class="label">${escapeHtml(label || state)}</span>${sub}</div>`;
+    }
+
+    async function rerunMidi(masterclassId) {
+      try {
+        await fetchJson(`/masterclasses/${masterclassId}/find-midi`, { method: "POST" });
+        showToast("Searching again…");
+        render();
+      } catch (err) { showToast(err.message, true); }
+    }
+    window.rerunMidi = rerunMidi;
+    window.renderContinueList = renderContinueList;
+    window.fetchJson = fetchJson;
+
+    function renderLessonsList(masterclassId, lessons) {
+      const box = document.getElementById("lessons-list");
+      if (!lessons.length) {
+        box.innerHTML = `<div class="empty">No lessons yet. Click below to record your first.</div>`;
+        return;
+      }
+      lessons.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+      box.innerHTML = lessons.map(s => {
+        const sid = s.session.session_id;
+        const state = s.state || "created";
+        const stateClass = state === "ready" ? "ready" : state === "failed" ? "failed" : (state === "uploaded" || state === "created") ? "uploaded" : "processing";
+        const measures = (s.metadata.first_measure)
+          ? `mm. ${s.metadata.first_measure}–${s.metadata.last_measure || "?"}`
+          : "Whole piece";
+        const num = s.metadata.lesson_number || "";
+        const notes = (s.notes || "").trim();
+        const action = state === "ready"
+          ? `<a class="ghost" style="text-decoration:none" target="_blank" href="/lessons/${sid}/player?user_id=${encodeURIComponent(userId())}">Open player →</a>`
+          : `<a class="ghost" style="text-decoration:none" href="#/class/${masterclassId}/lesson/${sid}/processing">View progress →</a>`;
+        return `
+          <div class="lesson-row" data-id="${sid}">
+            <div class="when">${formatDate(s.created_at)}</div>
+            <div class="body">
+              <div class="title">Lesson ${num} · ${escapeHtml(measures)}</div>
+              ${notes ? `<div class="notes">${escapeHtml(notes)}</div>` : ""}
+            </div>
+            <span class="badge ${stateClass}">${escapeHtml(state.replace(/_/g, " "))}</span>
+            ${action}
+          </div>
+        `;
+      }).join("");
+    }
+
+    // ---------- view: new lesson ----------
+    async function viewNewLesson(masterclassId) {
+      const klass = await fetchJson(`/masterclasses/${masterclassId}`);
+      // Try to get the played-movement bar count to pre-fill the range.
+      let totalBars = null;
+      let movementTitle = null;
+      try {
+        const prep = await fetchJson(`/masterclasses/${masterclassId}/score-prep`);
+        const playedId = prep.played_movement_id || prep.metadata?.played_movement_id;
+        const movements = prep.score_prep?.movements || prep.movements || [];
+        const movement = movements.find(m => m.id === playedId) || movements[0];
+        if (movement) {
+          totalBars = movement.measure_count || movement.last_measure;
+          movementTitle = movement.title;
+        }
+        if (!totalBars && prep.metadata?.score_prep_played_movement_measure_count) {
+          totalBars = prep.metadata.score_prep_played_movement_measure_count;
+        }
+        if (!totalBars && prep.metadata?.score_prep_midi_measure_count) {
+          totalBars = prep.metadata.score_prep_midi_measure_count;
+        }
+      } catch (_) {}
+      const lastDefault = totalBars || "";
+      const movementHint = (movementTitle && totalBars)
+        ? `${escapeHtml(movementTitle)} · ${totalBars} bars total`
+        : (totalBars ? `${totalBars} bars total` : "");
+      app.innerHTML = `
+        <div class="breadcrumbs">
+          <a href="#/">Home</a><span class="sep">·</span>
+          <a href="#/class/${masterclassId}">${escapeHtml(klass.piece_name)}</a><span class="sep">·</span>
+          <span class="current">New lesson</span>
+        </div>
+        <h1 class="page-title">Record a new lesson</h1>
+        <p class="page-sub">Upload your performance video. Tell the teacher what you'd like feedback on.</p>
+        <form id="new-lesson-form" class="panel">
+          <div class="field">
+            <label>Performance video</label>
+            <label class="file-drop">
+              <span class="ico">▶</span>
+              <span class="text">Attach lesson video<small>mp4 · required</small></span>
+              <input type="file" name="file" accept="video/mp4,video/quicktime,video/*" required>
+            </label>
+          </div>
+          <div class="field" style="background:rgba(255,200,80,0.06);border:1px solid rgba(255,200,80,0.2);padding:14px;border-radius:6px">
+            <label style="font-weight:600">📍 Which measures did you play?</label>
+            <div style="font-size:12px;color:var(--ink-mute);margin-bottom:8px">
+              We'll detect the played range from your recording. Set this only if auto-detection guesses wrong.
+              ${movementHint ? `<br><span style="opacity:0.7">${movementHint}</span>` : ""}
+            </div>
+            <div class="field-row" style="margin:0">
+              <div class="field" style="margin:0">
+                <label for="first_measure" style="font-size:12px">From bar</label>
+                <input id="first_measure" name="first_measure" type="number" min="1" placeholder="auto-detected">
+              </div>
+              <div class="field" style="margin:0">
+                <label for="last_measure" style="font-size:12px">To bar</label>
+                <input id="last_measure" name="last_measure" type="number" min="1" placeholder="auto">
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="notes">What should the teacher focus on?</label>
+            <textarea id="notes" name="notes" placeholder="What changed since last lesson? What are you working on?"></textarea>
+          </div>
+          <div class="actions-row">
+            <button type="button" class="ghost" onclick="goto('/class/${masterclassId}')">← Cancel</button>
+            <div class="actions-right">
+              <span id="lesson-status" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink-mute)"></span>
+              <button type="submit" class="primary">Submit lesson →</button>
+            </div>
+          </div>
+        </form>
+      `;
+      bindFileDrops(app);
+      document.getElementById("new-lesson-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const submit = form.querySelector("button[type=submit]");
+        const status = document.getElementById("lesson-status");
+        submit.disabled = true;
+        status.textContent = "Uploading…";
+        try {
+          const payload = await uploadWithProgress(`/masterclasses/${masterclassId}/lessons/run`, cleanFormData(form), (loaded, total) => {
+            const pct = total ? Math.round((loaded / total) * 100) : 0;
+            const mb = (loaded / 1048576).toFixed(1);
+            const total_mb = (total / 1048576).toFixed(1);
+            status.textContent = `Uploading… ${pct}% (${mb}/${total_mb} MB)`;
+          });
+          status.textContent = "Uploaded.";
+          goto(`/class/${masterclassId}/lesson/${payload.session.session.session_id}/processing`);
+        } catch (err) {
+          status.textContent = err.message;
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    }
+
+    // ---------- view: processing ----------
+    const STAGE_DEFS = [
+      { key: "extract_media", label: "Extracting audio and video frames" },
+      { key: "analyze", label: "Analyzing the performance audio" },
+      { key: "evidence_packet", label: "Building the evidence summary" },
+      { key: "onsets", label: "Finding note attacks" },
+      { key: "hmm_align", label: "Matching your performance to the score" },
+      { key: "alignment", label: "Approximate matching (fallback)" },
+      { key: "score_map", label: "Mapping notes to the score layout" },
+      { key: "intonation", label: "Checking intonation" },
+      { key: "rhythm", label: "Measuring rhythm and tempo" },
+      { key: "voicing", label: "Analyzing voicing and balance" },
+      { key: "mechanical_comments", label: "Generating measurement notes" },
+      { key: "teach", label: "The teacher is reviewing your playing" },
+    ];
+
+    async function viewProcessing(masterclassId, sessionId) {
+      const klass = await fetchJson(`/masterclasses/${masterclassId}`);
+      app.innerHTML = `
+        <div class="breadcrumbs">
+          <a href="#/">Home</a><span class="sep">·</span>
+          <a href="#/class/${masterclassId}">${escapeHtml(klass.piece_name)}</a><span class="sep">·</span>
+          <span class="current">Lesson processing</span>
+        </div>
+        <h1 class="page-title">Working on your lesson</h1>
+        <p class="page-sub">This usually takes a couple of minutes. You can leave this page open or come back later.</p>
+        <div class="panel">
+          <div class="progress-bar-shell"><div class="fill" id="overall-fill" style="width:5%"></div></div>
+          <div id="stage-stack" class="progress-stack"></div>
+        </div>
+        <div class="actions-row">
+          <button type="button" class="ghost" onclick="goto('/class/${masterclassId}')">← Class home</button>
+          <a id="open-player" class="primary" style="display:none;text-decoration:none" target="_blank">Open player →</a>
+        </div>
+      `;
+      const handle = pollProcessing(masterclassId, sessionId);
+      stopPolling = () => clearTimeout(handle);
+    }
+
+    function pollProcessing(masterclassId, sessionId) {
+      let timer = null;
+      async function tick() {
+        try {
+          const session = await fetchJson(`/sessions/${sessionId}`);
+          const states = {};
+          for (const def of STAGE_DEFS) states[def.key] = session.metadata[`${def.key}_state`] || "pending";
+          renderStageStack(states);
+          const ready = STAGE_DEFS.filter(d => states[d.key] === "ready" || (states[d.key] || "").startsWith("skipped")).length;
+          const fill = Math.min(100, Math.round((ready / STAGE_DEFS.length) * 100));
+          document.getElementById("overall-fill").style.width = `${Math.max(5, fill)}%`;
+          if (session.state === "ready") {
+            const link = document.getElementById("open-player");
+            link.href = `/lessons/${sessionId}/player?user_id=${encodeURIComponent(userId())}`;
+            link.style.display = "inline-block";
+            return;
+          }
+          if (session.state === "failed") {
+            const last = (session.errors || []).slice(-1)[0] || {};
+            showToast(`Lesson failed: ${last.error || "unknown"}`, true);
+          }
+          timer = setTimeout(tick, 2500);
+        } catch (err) {
+          showToast(err.message, true);
+          timer = setTimeout(tick, 5000);
+        }
+      }
+      tick();
+      return () => { if (timer) clearTimeout(timer); };
+    }
+
+    function renderStageStack(states) {
+      const box = document.getElementById("stage-stack");
+      if (!box) return;
+      box.innerHTML = STAGE_DEFS.map(def => {
+        const s = (states[def.key] || "pending");
+        const cls = s === "ready" ? "ready" :
+          s === "running" || s === "queued" ? "running" :
+          s === "failed" ? "failed" :
+          s.startsWith("skipped") ? "skipped" : "skipped";
+        const icon = s === "ready" ? `<span class="icon">✓</span>` :
+          s === "running" ? `<span class="icon spinner"></span>` :
+          s === "failed" ? `<span class="icon">✗</span>` :
+          s.startsWith("skipped") ? `<span class="icon">—</span>` :
+          `<span class="icon">·</span>`;
+        return `<div class="status-line ${cls}">${icon}<span class="label">${escapeHtml(def.label)}</span><span class="meta">${escapeHtml(s.replace(/_/g, " "))}</span></div>`;
+      }).join("");
+    }
+
+    // ---------- boot ----------
+    if (!window.location.hash) window.location.hash = "#/";
+    render();
+  </script>
+</body>
+</html>

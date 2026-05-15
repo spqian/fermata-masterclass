@@ -1,0 +1,1313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson · Music Masterclass</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d12;
+      --panel: rgba(22, 24, 32, 0.94);
+      --panel-edge: rgba(255, 255, 255, 0.06);
+      --ink: #f5f1e8;
+      --ink-soft: #c5c0b3;
+      --ink-mute: #7a7669;
+      --gold: #c9a96a;
+      --gold-soft: #8a7654;
+      --rule: rgba(201, 169, 106, 0.22);
+      --danger: #d97a6c;
+      --accent: #a4b8d6;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Inter", system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    .topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 14px 28px;
+      border-bottom: 1px solid var(--panel-edge);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 600; }
+    .brand .mark {
+      width: 26px; height: 26px;
+      border: 1px solid var(--gold);
+      color: var(--gold);
+      border-radius: 4px;
+      display: grid; place-items: center;
+      font-weight: 700;
+    }
+    .brand a { color: var(--ink-mute); text-decoration: none; font-size: 12px; margin-left: 8px; }
+    .brand a:hover { color: var(--gold); }
+    .topbar .meta {
+      font-size: 12px; color: var(--ink-mute);
+      display: flex; gap: 14px; align-items: center;
+    }
+    .topbar .meta .alignment-tag {
+      padding: 2px 8px;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      border-radius: 10px;
+    }
+    .topbar .meta .alignment-tag.dtw { background: rgba(122,178,117,0.15); color: #8ec585; }
+    .topbar .meta .alignment-tag.llm { background: rgba(217,166,108,0.15); color: var(--gold); }
+    .topbar .meta input {
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--gold-soft);
+      color: var(--ink);
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      padding: 4px 6px;
+      width: 100px;
+      outline: none;
+    }
+    main {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 16px 22px;
+      height: calc(100vh - 56px);
+      min-height: 0;
+      overflow: hidden;
+    }
+    .player-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(0, 2.2fr) minmax(300px, 1.1fr);
+      gap: 14px;
+      align-items: stretch;
+      flex: 1;
+      min-height: 0;
+    }
+    .player-grid > .panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      max-height: 100%;
+      overflow: hidden;
+    }
+    .player-col-mid {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 0;
+    }
+    .player-col-mid > .panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .player-col-mid > .video-panel { flex: 0 0 auto; }
+    .player-col-mid > .score-track {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .lesson-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr);
+      gap: 16px;
+      align-items: stretch;
+      min-height: 320px;
+      max-height: 46vh;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: 4px;
+      padding: 14px 16px;
+    }
+    .video-panel { flex: 0 0 auto; }
+    .panel-title {
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-soft);
+      margin-bottom: 10px;
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .panel-title .opus { color: var(--gold); font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+    video {
+      width: 100%;
+      height: 28vh;
+      min-height: 180px;
+      max-height: 360px;
+      background: #000;
+      border-radius: 4px;
+      display: block;
+      object-fit: contain;
+    }
+    .video-meta {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 10px;
+      font-size: 13px; color: var(--ink-soft);
+    }
+    .video-meta h2 { margin: 0 0 2px; font-size: 17px; font-weight: 600; color: var(--ink); }
+    .video-meta .sub { font-size: 12px; color: var(--ink-mute); }
+    .state-badge {
+      font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 10px; font-weight: 600;
+    }
+    .state-badge.ready { background: rgba(122,178,117,0.15); color: #8ec585; }
+    .state-badge.failed { background: rgba(217,122,108,0.15); color: var(--danger); }
+    .state-badge.processing { background: rgba(164,184,214,0.15); color: var(--accent); }
+
+    .timeline {
+      position: relative;
+      height: 26px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--panel-edge);
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    .timeline .progress-bar {
+      position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+      background: rgba(201, 169, 106, 0.18);
+      border-right: 1px solid var(--gold);
+    }
+    .timeline .marker {
+      position: absolute; top: 4px; bottom: 4px; width: 3px;
+      background: var(--gold); cursor: pointer; border-radius: 1px;
+      transition: background 120ms ease, transform 120ms ease;
+    }
+    .timeline .marker:hover { background: #f0d089; transform: scaleY(1.2); }
+    .timeline .marker.active { background: #fff; }
+
+    /* Tracked score panel */
+    .score-track {
+      flex: 0 0 auto;
+      min-height: 240px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .score-track .stage {
+      flex: 0 0 auto;
+      position: relative;
+      overflow: hidden;
+      background: #fff;
+      border-radius: 4px;
+      min-height: 140px;
+      transition: height 200ms ease;
+    }
+    .score-track .stage img {
+      position: absolute;
+      transform-origin: top left;
+      will-change: transform;
+      transition: transform 320ms ease;
+    }
+    .score-track .overlay {
+      position: absolute;
+      pointer-events: none;
+      border: 2px solid #f0c248;
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6) inset, 0 0 14px rgba(240, 194, 72, 0.6);
+      border-radius: 3px;
+      transition: opacity 200ms ease, top 200ms ease, left 200ms ease, width 200ms ease, height 200ms ease;
+      opacity: 0;
+    }
+    .score-track .overlay.active { opacity: 1; }
+    .score-track .note-ref-overlays,
+    .score-track .anchor-markers {
+      position: absolute; inset: 0;
+      pointer-events: none; z-index: 4;
+    }
+    .score-track .score-note-band {
+      position: absolute;
+      background: rgba(201, 169, 106, 0.24);
+      border: 1px solid rgba(240, 208, 137, 0.95);
+      box-shadow: 0 0 12px rgba(201, 169, 106, 0.35);
+      border-radius: 3px;
+    }
+    .score-track .score-anchor-line {
+      position: absolute; width: 1px;
+      background: rgba(201, 169, 106, 0.34);
+      border-left: 1px solid rgba(0, 0, 0, 0.12);
+    }
+    .score-track .score-anchor-label {
+      position: absolute; transform: translateX(-50%);
+      color: rgba(60, 45, 20, 0.72);
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid rgba(201, 169, 106, 0.35);
+      padding: 1px 4px; border-radius: 3px;
+      font: 10px/1.2 "JetBrains Mono", monospace;
+    }
+    .score-track .info-bar {
+      display: flex; gap: 12px; align-items: center;
+      font-size: 12px; color: var(--ink-mute);
+      font-family: "JetBrains Mono", monospace;
+    }
+    .score-track .info-bar .measure { color: var(--gold); font-weight: 600; }
+    .score-track .info-bar .bullet { color: var(--gold-soft); }
+    .score-track .info-bar button {
+      background: transparent;
+      color: var(--ink-soft);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 4px;
+      padding: 3px 10px;
+      font-family: "Inter", sans-serif;
+      font-size: 11px;
+      cursor: pointer;
+      margin-left: auto;
+    }
+    .score-track .info-bar button:hover { border-color: var(--gold); color: var(--ink); }
+
+    /* Pages strip below tracked view */
+    .score-strip {
+      display: flex; gap: 6px; overflow-x: auto;
+      padding: 6px 0;
+      max-height: 110px;
+    }
+    .score-strip .page-thumb {
+      flex: 0 0 auto;
+      width: 80px;
+      cursor: pointer;
+      position: relative;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .score-strip .page-thumb img { width: 100%; display: block; background: #fff; }
+    .score-strip .page-thumb .num {
+      position: absolute; top: 2px; left: 2px;
+      font-size: 9px; font-weight: 600; color: #fff;
+      background: rgba(0,0,0,0.6); padding: 1px 4px; border-radius: 2px;
+    }
+    .score-strip .page-thumb.active { border-color: var(--gold); }
+
+    .takeaway-panel, .comments-panel {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .takeaway-scroll, .comments-scroll {
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .takeaway-scroll { flex: 1; }
+    .comments-scroll {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .summary { font-size: 14px; color: var(--ink-soft); line-height: 1.55; }
+    .progress-notes {
+      margin-top: 10px; padding: 10px 12px;
+      border-left: 3px solid var(--gold);
+      background: rgba(201, 169, 106, 0.06);
+      font-size: 13px; color: var(--ink-soft); line-height: 1.5;
+    }
+
+    .severity-filter {
+      display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+      margin-bottom: 10px;
+      font-family: "JetBrains Mono", monospace;
+    }
+    .severity-filter .label { color: var(--ink-mute); font-size: 11px; margin-right: 2px; }
+    .severity-chip, .tiny-chip {
+      background: rgba(0,0,0,0.2); color: var(--ink-soft);
+      border: 1px solid rgba(201,169,106,0.28);
+      border-radius: 999px; padding: 3px 9px;
+      font: 11px/1.2 "JetBrains Mono", monospace;
+      cursor: pointer;
+    }
+    .severity-chip.active, .tiny-chip.active { color: var(--gold); background: rgba(201,169,106,0.10); border-color: var(--gold); }
+    .severity-chip[data-severity="info"] { border-color: rgba(164,184,214,0.45); }
+    .severity-chip[data-severity="warn"] { border-color: rgba(201,169,106,0.5); }
+    .severity-chip[data-severity="alert"] { border-color: rgba(217,122,108,0.5); }
+
+    .comments {
+      list-style: none; margin: 0; padding: 0;
+      min-height: 200px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .comments::-webkit-scrollbar { width: 6px; }
+    .comments::-webkit-scrollbar-thumb { background: rgba(201, 169, 106, 0.3); border-radius: 3px; }
+    .comment {
+      padding: 12px 14px;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(0,0,0,0.25);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .comment:hover { border-color: rgba(201, 169, 106, 0.4); background: rgba(201, 169, 106, 0.04); }
+    .comment.active { border-color: var(--gold); background: rgba(201, 169, 106, 0.08); }
+    .comment .row1 { display: flex; gap: 10px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
+    .comment .ts { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--gold); font-weight: 600; }
+    .comment .cat {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--ink-mute); font-weight: 600;
+      padding: 2px 6px; border-radius: 3px; background: rgba(255,255,255,0.04);
+    }
+    .comment .measure { font-size: 11px; color: var(--ink-mute); margin-left: auto; }
+    .comment .summary-line { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .comment .text { font-size: 13px; color: var(--ink-soft); line-height: 1.5; }
+    .comment .refs {
+      margin-top: 6px; font-size: 11px;
+      color: var(--ink-mute); font-family: "JetBrains Mono", monospace;
+    }
+    .comment .refs .ref-chip {
+      display: inline-block;
+      background: rgba(201, 169, 106, 0.1);
+      color: var(--gold);
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-right: 4px;
+      cursor: pointer;
+    }
+    .comment .sev { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+    .comment .sev.info { color: var(--accent); }
+    .comment .sev.warn { color: var(--gold); }
+    .comment .sev.alert { color: var(--danger); }
+    .dropped-wrap { margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; }
+    .dropped-list { margin-top: 8px; display: none; font-size: 12px; color: var(--ink-mute); line-height: 1.45; }
+    .dropped-list.open { display: block; }
+    .dropped-item { padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .dropped-item .id { color: var(--gold); font-family: "JetBrains Mono", monospace; }
+    .tool-calls-panel details { margin: 0; }
+    .tool-calls-panel summary { cursor: pointer; list-style: none; }
+    .tool-calls-panel summary::-webkit-details-marker { display:none; }
+    .tool-call-list { display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; }
+    .tool-call { border: 1px solid rgba(255,255,255,0.06); background: rgba(0,0,0,0.20); border-radius: 4px; padding: 8px 10px; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+    .tool-call .top { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+    .tool-call .name { color: var(--gold); font-weight: 600; }
+    .tool-call .turn { color: var(--ink-mute); margin-left: auto; }
+    .tool-status { border-radius: 10px; padding: 1px 6px; text-transform: uppercase; font-size: 9px; font-weight: 700; }
+    .tool-status.ok { color: #8ec585; background: rgba(122,178,117,0.15); }
+    .tool-status.error { color: var(--danger); background: rgba(217,122,108,0.15); }
+    .tool-call pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--ink-soft); }
+
+    .lesson-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+    .lesson-section h4 {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--gold); margin: 0 0 6px;
+    }
+    .lesson-section ul { margin: 0; padding-left: 18px; line-height: 1.55; }
+    .lesson-section li { margin-bottom: 4px; }
+    .lesson-section .area {
+      padding: 6px 8px; border-left: 2px solid var(--gold-soft);
+      background: rgba(201,169,106,0.04); margin-bottom: 4px;
+    }
+    .lesson-section .area .focus { font-weight: 600; }
+    .lesson-section .area .ex { color: var(--ink-mute); font-size: 12px; }
+    .lesson-section .priority {
+      font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 1px 5px; border-radius: 3px; margin-left: 6px;
+      background: rgba(255,255,255,0.05); color: var(--ink-mute);
+    }
+    .lesson-section .priority.high { background: rgba(217,122,108,0.18); color: var(--danger); }
+    .lesson-section .priority.medium { background: rgba(201,169,106,0.18); color: var(--gold); }
+
+    .empty {
+      padding: 20px; color: var(--ink-mute); text-align: center;
+      font-size: 14px; border: 1px dashed rgba(255,255,255,0.08); border-radius: 4px;
+    }
+    .pending { padding: 20px; color: var(--ink-soft); text-align: center; font-size: 14px; }
+    .pending .spinner {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid rgba(201, 169, 106, 0.25);
+      border-top-color: var(--gold); border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-right: 10px; vertical-align: -2px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 1280px) {
+      .player-grid {
+        grid-template-columns: minmax(260px, 1fr) minmax(0, 1.8fr);
+      }
+      .player-grid > .comments-panel {
+        grid-column: 1 / -1;
+        max-height: 38vh;
+      }
+    }
+    @media (max-width: 900px) {
+      .player-grid {
+        grid-template-columns: 1fr;
+      }
+      .player-grid > .panel {
+        max-height: 60vh;
+      }
+      video { height: 32vh; max-height: 380px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">m</div>
+      <span>Music Masterclass</span>
+      <a href="/?user_id=pqian">← back</a>
+    </div>
+    <div class="meta">
+      <span class="alignment-tag llm" id="alignment-tag" title="Alignment source">…</span>
+      <span>session <span id="session-id" style="color:var(--ink-soft);font-family:monospace"></span></span>
+      <label>user <input id="user-id" value="pqian" autocomplete="off"></label>
+    </div>
+  </header>
+
+  <main>
+    <section class="player-grid">
+      <div class="panel takeaway-panel">
+        <div class="panel-title"><span>Teacher's takeaway</span><span class="opus" id="cost-tag"></span></div>
+        <div class="takeaway-scroll">
+          <div class="summary" id="summary">Waiting for the teacher to finish…</div>
+          <div class="progress-notes" id="progress-notes" style="display:none"></div>
+          <div id="lesson-detail" style="display:none; margin-top: 14px; font-size:13px; color:var(--ink-soft);"></div>
+        </div>
+      </div>
+
+      <div class="player-col-mid">
+        <div class="panel video-panel">
+          <div class="video-meta">
+            <div>
+              <h2 id="piece-name">Loading…</h2>
+              <div class="sub" id="lesson-sub">—</div>
+            </div>
+            <span class="state-badge processing" id="state-badge">loading</span>
+          </div>
+          <video id="video" controls preload="metadata" playsinline></video>
+          <div class="timeline" id="timeline"><div class="progress-bar" id="progress-bar"></div></div>
+        </div>
+
+        <div class="panel score-track">
+          <div class="panel-title"><span>Score</span><span class="opus" id="score-info">—</span></div>
+          <div class="info-bar">
+            <span>Now: <span class="measure" id="now-measure">—</span></span>
+            <span class="bullet">·</span>
+            <span>Page <span id="now-page">—</span></span>
+            <span class="bullet">·</span>
+            <span>System <span id="now-system">—</span></span>
+            <span class="bullet">·</span>
+            <span style="font-family:'JetBrains Mono',monospace">♪ <span id="now-note" style="color:var(--accent)">—</span></span>
+            <button type="button" id="toggle-follow">Following ✓</button>
+          </div>
+          <div class="stage" id="score-stage">
+            <img id="score-img" alt="">
+            <div class="overlay" id="overlay"></div>
+            <div class="anchor-markers" id="anchor-markers"></div>
+            <div class="note-ref-overlays" id="note-ref-overlays"></div>
+          </div>
+          <div class="score-strip" id="score-strip"></div>
+        </div>
+      </div>
+
+      <div class="panel comments-panel">
+        <div class="panel-title"><span>Comments</span><span class="opus" id="comment-count">—</span></div>
+        <div id="comments-host" class="comments-scroll">
+          <div class="pending" id="pending"><span class="spinner"></span>Lesson is still processing…</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="panel tool-calls-panel" id="tool-calls-panel" style="display:none">
+      <details>
+        <summary class="panel-title"><span>Teacher's investigation</span><span class="opus" id="tool-call-count">—</span></summary>
+        <div class="tool-call-list" id="tool-call-list"></div>
+      </details>
+    </div>
+  </main>
+
+  <script>
+    const SESSION_ID = "__SESSION_ID__";
+    const userInput = document.getElementById("user-id");
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialUserId = (urlParams.get("user_id") || "").trim();
+    if (initialUserId) userInput.value = initialUserId;
+    document.getElementById("session-id").textContent = SESSION_ID.slice(0, 12) + "…";
+
+    function userId() { return (userInput.value || "").trim() || "pqian"; }
+    function uquery() { return `?user_id=${encodeURIComponent(userId())}`; }
+    async function fetchJson(url) {
+      const r = await fetch(url, { headers: { "X-User-Id": userId() } });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `${r.status}`);
+      return data;
+    }
+    async function fetchOptionalJson(url, fallback) {
+      try { return await fetchJson(url); } catch (_) { return fallback; }
+    }
+    function fmtTime(seconds) {
+      if (!isFinite(seconds)) return "–:––";
+      const s = Math.floor(seconds);
+      return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    }
+    function escapeHtml(s) {
+      return String(s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+
+    const video = document.getElementById("video");
+    video.src = `/lessons/${SESSION_ID}/video${uquery()}`;
+    const timeline = document.getElementById("timeline");
+    const progressBar = document.getElementById("progress-bar");
+    const stateBadge = document.getElementById("state-badge");
+    const pieceName = document.getElementById("piece-name");
+    const lessonSub = document.getElementById("lesson-sub");
+    const commentsHost = document.getElementById("comments-host");
+    const summaryBox = document.getElementById("summary");
+    const progressNotesBox = document.getElementById("progress-notes");
+    const commentCount = document.getElementById("comment-count");
+    const costTag = document.getElementById("cost-tag");
+    const scoreInfo = document.getElementById("score-info");
+
+    const scoreStage = document.getElementById("score-stage");
+    const scoreImg = document.getElementById("score-img");
+    const overlay = document.getElementById("overlay");
+    const anchorMarkers = document.getElementById("anchor-markers");
+    const noteRefOverlays = document.getElementById("note-ref-overlays");
+    const scoreStrip = document.getElementById("score-strip");
+    const nowMeasureEl = document.getElementById("now-measure");
+    const nowPageEl = document.getElementById("now-page");
+    const nowSystemEl = document.getElementById("now-system");
+    const toggleFollow = document.getElementById("toggle-follow");
+
+    let comments = [];
+    let measureTimestamps = [];
+    let prepDoc = null;
+    let scoreMap = null;
+    let scoreMapNoteById = new Map();
+    let pagesData = [];               // [{page, kind, systems:[{system_index, first_measure, last_measure, bbox}]}]
+    let imageNaturalSizes = {};       // page -> {w, h}
+    let activeComment = null;
+    let pollHandle = null;
+    let currentPage = null;
+    let currentSystem = null;
+    let currentScoreTransform = null;
+    let severityVisible = new Set(["info", "warn", "alert"]);
+    let lastCommentsPayload = null;
+    let following = true;
+    toggleFollow.addEventListener("click", () => {
+      following = !following;
+      toggleFollow.textContent = following ? "Following ✓" : "Manual";
+    });
+
+    function setStateBadge(state) {
+      stateBadge.className = "state-badge";
+      if (state === "ready") stateBadge.classList.add("ready");
+      else if (state === "failed") stateBadge.classList.add("failed");
+      else stateBadge.classList.add("processing");
+      stateBadge.textContent = (state || "loading").replace(/_/g, " ");
+    }
+
+    function renderManifest(payload) {
+      const session = payload.session || {};
+      const klass = payload.masterclass || {};
+      pieceName.textContent = session.repertoire || klass.piece_name || "Lesson";
+      const measures = session.metadata && session.metadata.first_measure
+        ? `mm. ${session.metadata.first_measure}–${session.metadata.last_measure || "?"}`
+        : "all measures";
+      const stamp = session.created_at ? new Date(session.created_at).toLocaleString() : "";
+      lessonSub.textContent = `${measures} · ${stamp}`;
+      setStateBadge(session.state);
+    }
+
+    function renderScoreStrip() {
+      if (!pagesData.length) {
+        scoreStrip.innerHTML = "";
+        return;
+      }
+      scoreStrip.innerHTML = pagesData.map(p => `
+        <div class="page-thumb" data-page="${p.page}">
+          <img src="/lessons/${SESSION_ID}/score-page/${p.page}${uquery()}" alt="page ${p.page}">
+          <div class="num">${p.page}</div>
+        </div>
+      `).join("");
+      for (const t of scoreStrip.querySelectorAll(".page-thumb")) {
+        t.addEventListener("click", () => {
+          following = false;
+          toggleFollow.textContent = "Manual";
+          showSystem(parseInt(t.dataset.page, 10), 1);
+        });
+      }
+    }
+
+    function finiteNumber(value) {
+      if (value == null || value === "") return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function scoreLocationFromObject(obj, bar) {
+      if (!obj && !bar) return null;
+      const explicitPage = finiteNumber(obj && obj.page);
+      const barPage = finiteNumber(bar && bar.page);
+      let page = explicitPage ?? barPage;
+      let systemIndex = finiteNumber(obj && (obj.system_on_page ?? obj.system_index));
+      if (systemIndex == null) systemIndex = finiteNumber(bar && (bar.system_on_page ?? bar.system_index));
+      const rawSystem = finiteNumber((obj && obj.system) ?? (bar && bar.system));
+      if (rawSystem != null) {
+        if (rawSystem >= 100) {
+          if (page == null) page = Math.floor(rawSystem / 100);
+          if (systemIndex == null) systemIndex = rawSystem % 100;
+        } else if (systemIndex == null && page != null) {
+          systemIndex = rawSystem;
+        }
+      }
+      return page != null && systemIndex != null ? { page, systemIndex } : null;
+    }
+
+    function referenceLocation(ref) {
+      if (!ref) return null;
+      const page = finiteNumber(ref.page);
+      const systemIndex = finiteNumber(ref.system_on_page ?? ref.system_index);
+      return page != null && systemIndex != null ? { page, systemIndex } : null;
+    }
+
+    function firstCommentReferenceLocation(comment) {
+      for (const ref of (comment && comment.references) || []) {
+        const loc = referenceLocation(ref);
+        if (loc) return loc;
+      }
+      return null;
+    }
+
+    function elementReferenceLocation(el) {
+      const page = finiteNumber(el && el.dataset && el.dataset.page);
+      const systemIndex = finiteNumber(el && el.dataset && el.dataset.system_index);
+      return page != null && systemIndex != null ? { page, systemIndex } : null;
+    }
+
+    function setManualFollow() {
+      following = false;
+      toggleFollow.textContent = "Manual";
+    }
+
+    function showSystem(page, systemIndex) {
+      page = finiteNumber(page);
+      systemIndex = finiteNumber(systemIndex);
+      if (page == null) return false;
+      const pageData = pagesData.find(p => Number(p.page) === page);
+      if (!pageData) return false;
+      const systems = pageData.systems || [];
+      const system = systemIndex == null ? systems[0] : systems.find(s => Number(s.system_index) === systemIndex);
+      if (!system) return false;
+      currentPage = page;
+      currentSystem = system ? system.system_index : null;
+      nowPageEl.textContent = page;
+      nowSystemEl.textContent = currentSystem || "—";
+      // Highlight active strip thumb
+      for (const t of scoreStrip.querySelectorAll(".page-thumb")) {
+        t.classList.toggle("active", parseInt(t.dataset.page, 10) === page);
+      }
+      // Set the image src if we changed page
+      const want = `/lessons/${SESSION_ID}/score-page/${page}${uquery()}`;
+      if (!scoreImg.src.endsWith(`/score-page/${page}${uquery()}`)) {
+        scoreImg.src = want;
+      }
+      requestAnimationFrame(() => updateOverlayAndCrop(system));
+      return true;
+    }
+
+    function updateOverlayAndCrop(system) {
+      const stageRect = scoreStage.getBoundingClientRect();
+      const sw = stageRect.width;
+      if (!sw) return;
+
+      const natural = imageNaturalSizes[currentPage] || { w: scoreImg.naturalWidth, h: scoreImg.naturalHeight };
+      if (!natural.w || !natural.h) {
+        // wait for image to load
+        return;
+      }
+
+      // Stage height defaults to the bbox aspect ratio so we never show a sea of whitespace.
+      // The stage CSS keeps min-height: 200px; we override here based on what we're showing.
+      const padding = 0.04;
+      let scale, translateX, translateY, sh, bboxPx = null;
+
+      if (system && system.bbox) {
+        const rawY = system.bbox.y * natural.h;
+        const rawH = system.bbox.h * natural.h;
+        bboxPx = {
+          x: system.bbox.x * natural.w,
+          y: Math.max(0, rawY),
+          w: system.bbox.w * natural.w,
+          h: Math.min(natural.h - rawY, rawH),
+        };
+        // Fit bbox width to stage width with small padding; stage height becomes
+        // bbox height at that scale (plus padding) so there's no whitespace.
+        scale = (sw * (1 - padding * 2)) / bboxPx.w;
+        scale = Math.max(0.4, Math.min(scale, 4.0));
+        sh = Math.round(bboxPx.h * scale * (1 + padding * 2));
+        sh = Math.max(140, Math.min(sh, 560));
+        scoreStage.style.height = `${sh}px`;
+        translateX = (sw / 2) - (bboxPx.x + bboxPx.w / 2) * scale;
+        translateY = (sh / 2) - (bboxPx.y + bboxPx.h / 2) * scale;
+        overlay.classList.add("active");
+        overlay.style.left = `${translateX + bboxPx.x * scale}px`;
+        overlay.style.top = `${translateY + bboxPx.y * scale}px`;
+        overlay.style.width = `${bboxPx.w * scale}px`;
+        overlay.style.height = `${bboxPx.h * scale}px`;
+      } else {
+        // No bbox: show full page, sized to stage width.
+        scale = sw / natural.w;
+        sh = Math.round(natural.h * scale);
+        sh = Math.max(200, Math.min(sh, 800));
+        scoreStage.style.height = `${sh}px`;
+        translateX = 0;
+        translateY = 0;
+        overlay.classList.remove("active");
+      }
+
+      currentScoreTransform = { translateX, translateY, scale, natural, system: system || null, bboxPx };
+      renderAnchorMarkers();
+      scoreImg.style.width = `${natural.w}px`;
+      scoreImg.style.height = `${natural.h}px`;
+      scoreImg.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+    }
+
+    scoreImg.addEventListener("load", () => {
+      imageNaturalSizes[currentPage] = { w: scoreImg.naturalWidth, h: scoreImg.naturalHeight };
+      const pageData = pagesData.find(p => p.page === currentPage);
+      const sys = pageData && currentSystem
+        ? (pageData.systems || []).find(s => s.system_index === currentSystem)
+        : null;
+      updateOverlayAndCrop(sys);
+    });
+
+    function findPageAndSystemForMeasure(measure) {
+      if (!measure) return null;
+      for (const p of pagesData) {
+        const ms = p.systems || [];
+        for (const s of ms) {
+          const f = s.first_measure, l = s.last_measure;
+          if (f != null && l != null && f <= measure && measure <= l) {
+            return { page: p.page, system: s };
+          }
+        }
+        // fallback: page-level measure range
+        if (p.first_measure != null && p.last_measure != null && p.first_measure <= measure && measure <= p.last_measure && (p.systems || []).length) {
+          return { page: p.page, system: (p.systems || [])[0] };
+        }
+      }
+      return null;
+    }
+
+    function currentMeasureForTime(t) {
+      if (!measureTimestamps.length) return null;
+      let last = null;
+      for (const entry of measureTimestamps) {
+        if (entry.start <= t + 0.0001) last = entry.measure;
+        else break;
+      }
+      return last;
+    }
+
+    function currentNoteForTime(t) {
+      // Walk score_map.notes to find the most recent note whose perf_time <= t.
+      // Returns a friendly string like "G5+Bb4+D4+G3" (chord) or "F#5".
+      const notes = (scoreMap && scoreMap.notes) || [];
+      if (!notes.length) return null;
+      let last = null;
+      for (const n of notes) {
+        const pt = Number(n.perf_time ?? n.performed_time_sec);
+        if (!Number.isFinite(pt)) continue;
+        if (pt <= t + 0.0001) last = n;
+        else break;
+      }
+      if (!last) return null;
+      const names = Array.isArray(last.names) ? last.names : [];
+      const display = names.length ? names.join("+") : (last.note_id || "?");
+      const conf = last.hmm_confidence || last.confidence || "";
+      const confTag = conf && conf !== "high" ? ` (${conf})` : "";
+      const measure = last.measure ?? last.midi_measure;
+      return measure != null ? `m${measure} ${display}${confTag}` : `${display}${confTag}`;
+    }
+
+    function followCurrentTime() {
+      const t = video.currentTime;
+      const m = currentMeasureForTime(t);
+      const noteEl = document.getElementById("now-note");
+      if (noteEl) {
+        const noteText = currentNoteForTime(t);
+        noteEl.textContent = noteText || "—";
+      }
+      if (m == null) {
+        nowMeasureEl.textContent = "—";
+        return;
+      }
+      nowMeasureEl.textContent = m;
+      if (!following) return;
+      const found = findPageAndSystemForMeasure(m);
+      if (!found) return;
+      if (found.page !== currentPage || (found.system && found.system.system_index !== currentSystem)) {
+        showSystem(found.page, found.system ? found.system.system_index : 1);
+      }
+    }
+
+    function commentStart(c) { return Number(c.start ?? c.start_sec ?? 0) || 0; }
+    function commentEnd(c) { return Number(c.end ?? c.end_sec ?? (commentStart(c) + 2)) || (commentStart(c) + 2); }
+    function commentSeverity(c) { return String(c.severity || "info").toLowerCase().replace(/[^a-z]/g, "") || "info"; }
+    function noteRefId(ref) { return typeof ref === "string" ? ref : String((ref && (ref.note_id || ref.id || ref.pitch_name)) || ""); }
+    function updateCommentCount() {
+      const visible = comments.filter(c => severityVisible.has(commentSeverity(c))).length;
+      commentCount.textContent = comments.length ? `${visible}/${comments.length} note(s)` : "—";
+    }
+    function setupSeverityFilter() {
+      const box = document.getElementById("severity-filter");
+      if (!box) return;
+      for (const btn of box.querySelectorAll(".severity-chip")) {
+        btn.addEventListener("click", () => {
+          const sev = btn.dataset.severity;
+          if (severityVisible.has(sev)) severityVisible.delete(sev); else severityVisible.add(sev);
+          btn.classList.toggle("active", severityVisible.has(sev));
+          applySeverityFilter();
+          renderTimelineMarkers();
+        });
+      }
+    }
+    function applySeverityFilter() {
+      const list = document.getElementById("comments-list");
+      if (!list) return;
+      let visible = 0;
+      for (const li of list.querySelectorAll(".comment")) {
+        const show = severityVisible.has(li.dataset.severity || "info");
+        li.style.display = show ? "" : "none";
+        if (show) visible += 1;
+      }
+      let empty = list.querySelector(".severity-empty");
+      if (!visible) {
+        if (!empty) {
+          empty = document.createElement("li");
+          empty.className = "empty severity-empty";
+          empty.textContent = "No comments match the selected severities.";
+          list.appendChild(empty);
+        }
+      } else if (empty) empty.remove();
+      updateCommentCount();
+    }
+    function renderDropped(dropped) {
+      const host = document.getElementById("dropped-wrap");
+      if (!host) return;
+      if (!Array.isArray(dropped) || !dropped.length) { host.innerHTML = ""; return; }
+      host.innerHTML = `<button type="button" class="tiny-chip" id="dropped-toggle">${dropped.length} dropped</button><div class="dropped-list" id="dropped-list">${dropped.map(d => `<div class="dropped-item"><span class="id">${escapeHtml(d.id || "dropped")}</span> — ${escapeHtml(d.reason || d.text || "No reason supplied")}</div>`).join("")}</div>`;
+      const toggle = document.getElementById("dropped-toggle");
+      const list = document.getElementById("dropped-list");
+      toggle && toggle.addEventListener("click", () => { list.classList.toggle("open"); toggle.classList.toggle("active", list.classList.contains("open")); });
+    }
+
+    function setScoreMap(map) {
+      scoreMap = map && typeof map === "object" ? map : null;
+      scoreMapNoteById = new Map();
+      for (const n of (scoreMap && scoreMap.notes) || []) if (n && n.note_id) scoreMapNoteById.set(String(n.note_id), n);
+      renderAnchorMarkers();
+    }
+    function scoreMapBarsForCurrentSystem() {
+      if (!scoreMap || !Array.isArray(scoreMap.bars) || !currentPage || !currentSystem) return [];
+      return scoreMap.bars.filter(b => {
+        const loc = scoreLocationFromObject(b);
+        return loc && Number(loc.page) === Number(currentPage) && Number(loc.systemIndex) === Number(currentSystem);
+      });
+    }
+    function scoreMapSystemForNote(note) {
+      if (!note) return null;
+      const noteMeasure = Number(note.measure ?? note.midi_measure);
+      const notePage = finiteNumber(note.page);
+      const bar = ((scoreMap && scoreMap.bars) || []).find(b =>
+        Number(b.measure ?? b.midi_measure) === noteMeasure &&
+        (notePage == null || Number(b.page) === notePage)
+      );
+      return scoreLocationFromObject(note, bar);
+    }
+    function noteFraction(note) {
+      if (note.x_frac != null && note.x_frac_end != null) return [(Number(note.x_frac) + Number(note.x_frac_end)) / 2, Math.max(0.012, Number(note.x_frac_end) - Number(note.x_frac))];
+      const bar = ((scoreMap && scoreMap.bars) || []).find(b => Number(b.measure ?? b.midi_measure) === Number(note.measure ?? note.midi_measure));
+      if (!bar) return [0.5, 0.02];
+      const span = bar.highlight_x_frac || [Number(bar.first_bar_x_pad_frac || 0.06), 1 - Number(bar.trailing_x_pad_frac || 0.04)];
+      const beat = Number(note.beat_in_bar ?? note.beat ?? 1);
+      const frac = Math.max(0, Math.min(1, (beat - 1) / 4));
+      return [Number(span[0]) + (Number(span[1]) - Number(span[0])) * frac, 0.025];
+    }
+    function systemBoxPixels() {
+      if (!currentScoreTransform || !currentScoreTransform.bboxPx) return null;
+      const t = currentScoreTransform;
+      return { left: t.translateX + t.bboxPx.x * t.scale, top: t.translateY + t.bboxPx.y * t.scale, width: t.bboxPx.w * t.scale, height: t.bboxPx.h * t.scale };
+    }
+    function renderAnchorMarkers() {
+      if (!anchorMarkers) return;
+      anchorMarkers.innerHTML = "";
+      const box = systemBoxPixels();
+      if (!box) return;
+      // anchor-markers logic: derive bar boundary markers from score_map.bars for the current system.
+      for (const b of scoreMapBarsForCurrentSystem()) {
+        const xFrac = Number((b.highlight_x_frac || [0, 1])[0]);
+        const x = box.left + xFrac * box.width;
+        const line = document.createElement("div");
+        line.className = "score-anchor-line";
+        line.style.left = `${x}px`;
+        line.style.top = `${box.top}px`;
+        line.style.height = `${box.height}px`;
+        anchorMarkers.appendChild(line);
+        const label = document.createElement("div");
+        label.className = "score-anchor-label";
+        label.style.left = `${x}px`;
+        label.style.top = `${Math.max(2, box.top - 16)}px`;
+        label.textContent = b.measure ?? b.midi_measure ?? "";
+        anchorMarkers.appendChild(label);
+      }
+    }
+    function resolveCommentNotes(comment) {
+      const refs = Array.isArray(comment.note_refs) ? comment.note_refs : [];
+      const out = [];
+      for (const ref of refs) {
+        const id = noteRefId(ref);
+        if (id && scoreMapNoteById.has(id)) out.push(scoreMapNoteById.get(id));
+      }
+      if (!out.length) {
+        for (const r of (comment.references || [])) {
+          const found = ((scoreMap && scoreMap.notes) || []).find(n => Number(n.measure ?? n.midi_measure) === Number(r.measure) && (!r.note_name || (n.names || []).includes(r.note_name)) && (r.beat == null || Math.abs(Number(n.beat_in_bar || 0) - Number(r.beat)) < 0.18));
+          if (found) out.push(found);
+        }
+      }
+      return out;
+    }
+    function paintNoteRefBands(notes) {
+      clearNoteRefHighlights();
+      const box = systemBoxPixels();
+      if (!box || !notes.length) return;
+      const bars = scoreMapBarsForCurrentSystem();
+      const systemIds = new Set(bars.map(b => finiteNumber(b.system)).filter(n => n != null));
+      for (const note of notes) {
+        const loc = scoreMapSystemForNote(note);
+        if (loc && Number(loc.page) !== Number(currentPage)) continue;
+        if (loc && Number(loc.systemIndex) !== Number(currentSystem) && !systemIds.has(Number(note.system))) continue;
+        const [xFrac, fracWidth] = noteFraction(note);
+        const w = Math.max(8, fracWidth * box.width * 1.8);
+        const x = box.left + xFrac * box.width - w / 2;
+        const band = document.createElement("div");
+        band.className = "score-note-band";
+        band.style.left = `${x}px`;
+        band.style.top = `${box.top}px`;
+        band.style.width = `${w}px`;
+        band.style.height = `${box.height}px`;
+        band.title = note.note_id || "note reference";
+        noteRefOverlays.appendChild(band);
+      }
+    }
+    function showNoteRefHighlights(comment, preferredLoc) {
+      const notes = resolveCommentNotes(comment);
+      const explicitLoc = preferredLoc || firstCommentReferenceLocation(comment);
+      const firstLoc = explicitLoc || (notes.length ? scoreMapSystemForNote(notes[0]) : null);
+      if (firstLoc && (firstLoc.page !== currentPage || firstLoc.systemIndex !== currentSystem)) {
+        setManualFollow();
+        if (showSystem(firstLoc.page, firstLoc.systemIndex) && notes.length) {
+          requestAnimationFrame(() => paintNoteRefBands(notes));
+        }
+      } else if (notes.length) paintNoteRefBands(notes);
+    }
+    function clearNoteRefHighlights() { if (noteRefOverlays) noteRefOverlays.innerHTML = ""; }
+
+    function renderToolCalls(payload) {
+      const panel = document.getElementById("tool-calls-panel");
+      const list = document.getElementById("tool-call-list");
+      const count = document.getElementById("tool-call-count");
+      const calls = Array.isArray(payload) ? payload : (payload && (payload.tool_calls || payload.calls || payload.items)) || [];
+      if (!panel || !list || !Array.isArray(calls) || !calls.length) { if (panel) panel.style.display = "none"; return; }
+      panel.style.display = "block";
+      count.textContent = `${calls.length} call${calls.length === 1 ? "" : "s"}`;
+      list.innerHTML = calls.map((call, i) => {
+        const status = String(call.status || (call.error ? "error" : "ok")).toLowerCase();
+        const args = call.args == null ? {} : call.args;
+        const duration = call.duration_sec != null ? ` · ${Number(call.duration_sec).toFixed(2)}s` : "";
+        return `<div class="tool-call"><div class="top"><span class="name">${escapeHtml(call.tool || call.name || `tool_${i+1}`)}</span><span class="tool-status ${status === "error" ? "error" : "ok"}">${escapeHtml(status)}</span><span class="turn">turn ${escapeHtml(call.turn ?? "?")}${duration}</span></div><pre>${escapeHtml(JSON.stringify(args, null, 0))}</pre></div>`;
+      }).join("");
+    }
+
+    function renderComments(payload) {
+      lastCommentsPayload = payload || {};
+      comments = payload.comments || [];
+      measureTimestamps = payload.measure_timestamps || [];
+      const meta = payload._meta || {};
+      const alignTag = document.getElementById("alignment-tag");
+      if (meta.measure_timestamps_source === "chroma_dtw") {
+        alignTag.className = "alignment-tag dtw";
+        alignTag.textContent = "MIDI-aligned ✓";
+        alignTag.title = "Score follows playback via deterministic chroma DTW against reference MIDI.";
+      } else {
+        alignTag.className = "alignment-tag llm";
+        alignTag.textContent = "estimated";
+        alignTag.title = "No MIDI alignment available; following uses the teacher's listening estimates.";
+      }
+      updateCommentCount();
+      summaryBox.textContent = (payload.summary || "").trim() || "No summary yet.";
+      const progress = (payload.progress_notes || "").trim();
+      if (progress) {
+        progressNotesBox.style.display = "block";
+        progressNotesBox.textContent = progress;
+      } else {
+        progressNotesBox.style.display = "none";
+      }
+      const cost = (payload._meta || {}).estimated_cost_usd;
+      if (cost != null) {
+        costTag.textContent = `~$${Number(cost).toFixed(3)}`;
+      }
+
+      const lesson = payload.lesson || {};
+      const lessonBox = document.getElementById("lesson-detail");
+      const sections = [];
+      if (lesson.artistic_summary) {
+        sections.push(`<div class="lesson-section"><h4>Artistic reading</h4><div>${escapeHtml(lesson.artistic_summary)}</div></div>`);
+      }
+      if (Array.isArray(lesson.what_works) && lesson.what_works.length) {
+        sections.push(`<div class="lesson-section"><h4>What's working</h4><ul>${lesson.what_works.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`);
+      }
+      if (Array.isArray(lesson.areas_to_develop) && lesson.areas_to_develop.length) {
+        const items = lesson.areas_to_develop.map(a => {
+          const pri = (a.priority || "medium").toLowerCase();
+          return `<div class="area"><span class="focus">${escapeHtml(a.focus || "")}</span><span class="priority ${pri}">${pri}</span><div class="ex">${escapeHtml(a.exercise || "")}</div></div>`;
+        }).join("");
+        sections.push(`<div class="lesson-section"><h4>Areas to develop</h4>${items}</div>`);
+      }
+      if (Array.isArray(lesson.this_week_practice) && lesson.this_week_practice.length) {
+        sections.push(`<div class="lesson-section"><h4>This week's practice</h4><ul>${lesson.this_week_practice.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`);
+      }
+      if (lesson.next_take) {
+        sections.push(`<div class="lesson-section"><h4>For next take</h4><div>${escapeHtml(lesson.next_take)}</div></div>`);
+      }
+      if (sections.length) {
+        lessonBox.style.display = "block";
+        lessonBox.innerHTML = sections.join("");
+      } else {
+        lessonBox.style.display = "none";
+        lessonBox.innerHTML = "";
+      }
+      if (!comments.length) {
+        commentsHost.innerHTML = `<div class="empty">No teacher comments yet.</div><div class="dropped-wrap" id="dropped-wrap"></div>`;
+        renderDropped(payload.dropped || []);
+        return;
+      }
+      commentsHost.innerHTML = `
+        <div class="severity-filter" id="severity-filter" data-feature="severity-filter">
+          <span class="label">severity</span>
+          ${["info", "warn", "alert"].map(sev => `<button type="button" class="severity-chip ${severityVisible.has(sev) ? "active" : ""}" data-severity="${sev}">${sev}</button>`).join("")}
+        </div>
+        <ul class="comments" id="comments-list"></ul>
+        <div class="dropped-wrap" id="dropped-wrap"></div>
+      `;
+      setupSeverityFilter();
+      renderDropped(payload.dropped || []);
+      const list = document.getElementById("comments-list");
+      list.innerHTML = comments.map((c) => {
+        const refs = (c.references || []).filter(r => r.measure != null);
+        const noteRefs = Array.isArray(c.note_refs) ? c.note_refs : [];
+        const loc = firstCommentReferenceLocation(c);
+        const pageAttr = loc ? ` data-page="${loc.page}" data-system_index="${loc.systemIndex}"` : "";
+        const refsHtml = (refs.length || noteRefs.length)
+          ? `<div class="refs">${refs.map((r, i) => {
+              const label = [
+                r.note_name || "note",
+                r.measure ? `m.${r.measure}` : "",
+                r.beat ? `beat ${r.beat}` : "",
+                r.hand || "",
+              ].filter(Boolean).join(" · ");
+              return `<span class="ref-chip" data-cid="${c.id}" data-rindex="${i}">${escapeHtml(label)}</span>`;
+            }).join("")}${noteRefs.map(n => `<span class="ref-chip note-ref-chip" data-cid="${c.id}" data-note-ref="${escapeHtml(noteRefId(n))}">${escapeHtml(noteRefId(n))}</span>`).join("")}</div>`
+          : "";
+        return `
+          <li class="comment" data-id="${c.id}" data-start="${commentStart(c)}" data-severity="${commentSeverity(c)}"${pageAttr}>
+            <div class="row1">
+              <span class="ts">${fmtTime(commentStart(c))}</span>
+              <span class="cat">${c.category || "note"}</span>
+              <span class="sev ${commentSeverity(c)}">${commentSeverity(c)}</span>
+              ${c.measure ? `<span class="measure">m. ${c.measure}</span>` : ""}
+            </div>
+            <div class="summary-line">${escapeHtml(c.summary || "")}</div>
+            <div class="text">${escapeHtml(c.text || "")}</div>
+            ${refsHtml}
+          </li>
+        `;
+      }).join("");
+      for (const li of list.querySelectorAll(".comment")) {
+        li.addEventListener("click", () => {
+          const c = comments.find(x => x.id === li.dataset.id);
+          if (!c) return;
+          seekTo(parseFloat(li.dataset.start));
+          if (c.references && c.references.length) {
+            setManualFollow();
+            highlightReference(c.references[0]);
+          }
+        });
+        li.addEventListener("mouseenter", () => {
+          const c = comments.find(x => x.id === li.dataset.id);
+          if (c) showNoteRefHighlights(c, elementReferenceLocation(li));
+        });
+        li.addEventListener("mouseleave", clearNoteRefHighlights);
+      }
+      applySeverityFilter();
+      for (const chip of list.querySelectorAll(".ref-chip")) {
+        chip.addEventListener("mouseenter", () => {
+          const c = comments.find(x => x.id === chip.dataset.cid);
+          if (!c) return;
+          const r = (c.references || [])[parseInt(chip.dataset.rindex, 10)];
+          if (r) {
+            setManualFollow();
+            highlightReference(r);
+          }
+        });
+        chip.addEventListener("click", () => {
+          const c = comments.find(x => x.id === chip.dataset.cid);
+          if (!c) return;
+          const r = (c.references || [])[parseInt(chip.dataset.rindex, 10)];
+          if (r) {
+            setManualFollow();
+            highlightReference(r);
+          }
+        });
+      }
+      for (const chip of list.querySelectorAll(".note-ref-chip")) {
+        chip.addEventListener("mouseenter", () => {
+          const c = comments.find(x => x.id === chip.dataset.cid);
+          if (c) showNoteRefHighlights(c);
+        });
+        chip.addEventListener("mouseleave", clearNoteRefHighlights);
+      }
+      renderTimelineMarkers();
+    }
+
+    function highlightReference(ref) {
+      const loc = referenceLocation(ref);
+      if (loc) {
+        showSystem(loc.page, loc.systemIndex);
+        return;
+      }
+      const page = finiteNumber(ref && ref.page);
+      if (page != null) {
+        showSystem(page, null);
+        return;
+      }
+      const found = findPageAndSystemForMeasure(ref.measure);
+      if (found) showSystem(found.page, found.system ? found.system.system_index : 1);
+    }
+
+    function renderTimelineMarkers() {
+      for (const m of timeline.querySelectorAll(".marker")) m.remove();
+      if (!isFinite(video.duration) || !video.duration) return;
+      for (const c of comments) {
+        const start = commentStart(c);
+        if (start > video.duration || !severityVisible.has(commentSeverity(c))) continue;
+        const left = (start / video.duration) * 100;
+        const m = document.createElement("div");
+        m.className = "marker";
+        m.style.left = `${left}%`;
+        m.title = `${fmtTime(start)} · ${c.summary || ""}`;
+        m.dataset.id = c.id;
+        m.addEventListener("click", (e) => { e.stopPropagation(); seekTo(start); });
+        timeline.appendChild(m);
+      }
+    }
+
+    function seekTo(seconds) {
+      if (!isFinite(seconds)) return;
+      const target = Math.max(0, Math.min(seconds, (video.duration || seconds) - 0.05));
+      try { video.pause(); } catch (_) {}
+      video.currentTime = target;
+      try { video.play().catch(() => {}); } catch (_) {}
+      following = true;
+      toggleFollow.textContent = "Following ✓";
+      highlightActive(target);
+      followCurrentTime();
+    }
+
+    function highlightActive(t) {
+      let active = null;
+      for (const c of comments) {
+        const start = commentStart(c), end = commentEnd(c);
+        if (t + 0.001 >= start && (!end || t < end + 0.5)) active = c;
+      }
+      if (active && active.id === activeComment) return;
+      activeComment = active && active.id;
+      const list = document.getElementById("comments-list");
+      if (!list) return;
+      for (const li of list.querySelectorAll(".comment")) {
+        li.classList.toggle("active", li.dataset.id === activeComment);
+      }
+      for (const m of timeline.querySelectorAll(".marker")) {
+        m.classList.toggle("active", m.dataset.id === activeComment);
+      }
+    }
+
+    timeline.addEventListener("click", (e) => {
+      if (e.target.classList && e.target.classList.contains("marker")) return;
+      const rect = timeline.getBoundingClientRect();
+      const ratio = (e.clientX - rect.left) / rect.width;
+      if (isFinite(video.duration)) seekTo(ratio * video.duration);
+    });
+
+    video.addEventListener("loadedmetadata", renderTimelineMarkers);
+    video.addEventListener("timeupdate", () => {
+      if (!isFinite(video.duration) || !video.duration) return;
+      progressBar.style.width = `${(video.currentTime / video.duration) * 100}%`;
+      highlightActive(video.currentTime);
+      followCurrentTime();
+    });
+    window.addEventListener("resize", () => {
+      const pageData = pagesData.find(p => p.page === currentPage);
+      const sys = pageData && currentSystem
+        ? (pageData.systems || []).find(s => s.system_index === currentSystem)
+        : null;
+      updateOverlayAndCrop(sys);
+    });
+
+    function renderScore(prep) {
+      prepDoc = prep || {};
+      pagesData = ((prep && prep.pages) || []).filter(p => !p.kind || p.kind === "music");
+      const totalSystems = pagesData.reduce((acc, p) => acc + ((p.systems || []).length), 0);
+      scoreInfo.textContent = `${pagesData.length} page · ${totalSystems} system${totalSystems === 1 ? "" : "s"}`;
+      renderScoreStrip();
+      if (pagesData.length) {
+        const firstPage = pagesData[0];
+        const firstSystem = (firstPage.systems || [])[0];
+        showSystem(firstPage.page, firstSystem ? firstSystem.system_index : 1);
+      }
+    }
+
+    async function loadAll() {
+      try {
+        const payload = await fetchJson(`/lessons/${SESSION_ID}/manifest`);
+        renderManifest(payload);
+        const session = payload.session || {};
+        if (session.state === "ready") {
+          const [c, prep, smap, tcalls] = await Promise.all([
+            fetchJson(`/lessons/${SESSION_ID}/comments`),
+            fetchJson(`/lessons/${SESSION_ID}/score-prep`),
+            fetchOptionalJson(`/lessons/${SESSION_ID}/score-map`, {}),
+            fetchOptionalJson(`/lessons/${SESSION_ID}/tool-calls`, { tool_calls: [] }),
+          ]);
+          setScoreMap(smap);
+          renderScore(prep);
+          renderComments(c);
+          renderToolCalls(tcalls);
+          stopPolling();
+        } else if (session.state === "failed") {
+          commentsHost.innerHTML = `<div class="empty" style="color:var(--danger)">Lesson processing failed. Check the home page.</div>`;
+          stopPolling();
+        } else {
+          commentsHost.innerHTML = `<div class="pending"><span class="spinner"></span>${(session.state || "processing").replace(/_/g, " ")}…</div>`;
+          schedulePoll();
+        }
+      } catch (error) {
+        commentsHost.innerHTML = `<div class="empty" style="color:var(--danger)">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function schedulePoll() { stopPolling(); pollHandle = setTimeout(loadAll, 5000); }
+    function stopPolling() { if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; } }
+
+    userInput.addEventListener("change", () => {
+      video.src = `/lessons/${SESSION_ID}/video${uquery()}`;
+      loadAll();
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>

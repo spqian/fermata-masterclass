@@ -1,0 +1,25 @@
+Fermata Masterclass
+Copyright 2026 Steven Qian
+
+This product includes software developed by Steven Qian and contributors.
+
+This product depends on the following third-party software, which is NOT
+distributed with this repository but is downloaded by scripts/install_tools.ps1
+at install time:
+
+  - Audiveris (https://github.com/Audiveris/audiveris)
+      Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+      Audiveris is invoked as an external CLI process; this project does not
+      modify or statically link to Audiveris source.
+
+  - Eclipse Temurin OpenJDK 21 (https://adoptium.net/)
+      Licensed under the GNU General Public License v2 with Classpath Exception.
+
+  - FFmpeg (https://ffmpeg.org/)
+      Licensed under the GNU Lesser General Public License v2.1+ (LGPL).
+
+  - Python (https://www.python.org/)
+      Licensed under the Python Software Foundation License.
+
+This product uses the Google Gemini API at runtime. Use of Gemini is subject
+to Google's Terms of Service.
