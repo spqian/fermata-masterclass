@@ -94,6 +94,10 @@ For a v3 that targets multi-user / production deployment, this would need:
 - **No keyboard shortcuts** for play/pause, scrub, comment navigation.
 - **No edit mode** for the teacher's comments — read-only output.
 - **No export** to PDF / shareable URL.
+- **Chat has no streaming** — replies arrive as one response after the synchronous Gemini turn completes.
+- **No chat edit/regenerate flow** — past messages are immutable JSON records unless the whole conversation is deleted.
+- **Single-thread chat UX** — the backend supports multiple lesson chat threads, but the player loads the most recent one and does not expose a thread switcher yet.
+- **Chat context is lesson-only** — by design it does not pull prior lessons or other masterclasses into the follow-up prompt.
 
 ## Test coverage
 
@@ -122,3 +126,4 @@ What would help:
 7. **Audiveris JVM warmup** — keep a JVM process alive between requests. Avoids 5-10s startup cost per score-prep. ~1 day.
 
 8. **Gemini Pro/Flash A/B comparison** — currently always Pro for teacher; Flash is 4× cheaper and might be 80% as good for routine lessons. Worth empirical study.
+

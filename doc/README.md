@@ -9,6 +9,7 @@ This folder documents the v2 production app: what it does, how it's built, where
 | [`score-prep.md`](./score-prep.md) | PDF → MusicXML → score layout (Audiveris + visual barline detection) |
 | [`alignment.md`](./alignment.md) | HMM Viterbi note-level alignment, onset refinement, auto-detect played range |
 | [`teacher.md`](./teacher.md) | Agentic Gemini teacher: prompt layers, tool catalog, agentic loop, continuity |
+| [`chat.md`](./chat.md) | Lesson-scoped chat with the teacher: endpoints, storage, guardrails, cost model |
 | [`ui.md`](./ui.md) | Wizard ingest UI + player UI |
 | [`tooling.md`](./tooling.md) | Bundled toolchain (Python, ffmpeg, Audiveris, JRE), MIDI auto-finder |
 | [`data-model.md`](./data-model.md) | Every persistent JSON shape: manifests + engine artifacts |
@@ -53,3 +54,4 @@ The reference MIDI is **automatically found** on Mutopia.org (no user upload nee
 3. **Debugging score alignment?** [`score-prep.md`](./score-prep.md) and [`alignment.md`](./alignment.md).
 4. **Curious about how the LLM teacher works?** [`teacher.md`](./teacher.md).
 5. **Operating the app?** [`operations.md`](./operations.md).
+

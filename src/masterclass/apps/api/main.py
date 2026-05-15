@@ -16,6 +16,7 @@ from masterclass.auth.google_oauth import (
     OAUTH_COOKIE_NAME,
 )
 from masterclass.core.jobs import JobStore, QueuedJobType
+from masterclass.core.chat_models import delete_conversation, list_conversations, load_conversation
 from masterclass.core.masterclasses import MasterclassStore
 from masterclass.core.models import JobState
 from masterclass.core.models import TenantContext
@@ -33,6 +34,14 @@ from masterclass.engine.midi_finder import MidiFinderConfig, auto_attach_midi_to
 from masterclass.engine.onsets import detect_rich_onsets
 from masterclass.engine.rhythm import analyze_rhythm, persist_rhythm
 from masterclass.engine.score_map import build_score_map, persist_score_map
+from masterclass.engine.chat_guardrails import (
+    ChatGuardrailError,
+    check_conversation_turn_cap,
+    check_message_size,
+    check_user_quota,
+    topic_guard,
+)
+from masterclass.engine.teach_chat import ChatConfig, chat_usage_dict, run_chat_turn
 from masterclass.engine.teach_lesson import TeachConfig, teach_lesson
 from masterclass.engine.voicing import analyze_voicing, persist_voicing
 from masterclass.storage.base import ObjectStorage
@@ -40,11 +49,17 @@ from masterclass.storage.local import LocalObjectStorage
 from masterclass.toolchain.ffmpeg import FfmpegToolchain
 
 try:
-    from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+    from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
     from fastapi.responses import HTMLResponse, RedirectResponse, Response
     from pydantic import BaseModel
 except ImportError:
-    BackgroundTasks = Depends = FastAPI = File = Form = Header = HTTPException = Request = HTMLResponse = RedirectResponse = Response = UploadFile = BaseModel = None
+    BackgroundTasks = Body = Depends = FastAPI = File = Form = Header = HTTPException = Request = HTMLResponse = RedirectResponse = Response = UploadFile = BaseModel = None
+
+
+if BaseModel is not None:
+    class ChatRequest(BaseModel):
+        message: str
+        conversation_id: str | None = None
 
 
 def _build_storage() -> ObjectStorage:
@@ -1278,6 +1293,96 @@ def create_app():
             if isinstance(usage, dict) and isinstance(usage.get("tool_calls"), list):
                 calls.extend(usage["tool_calls"])
         return {"tool_calls": calls}
+
+    @app.post("/lessons/{session_id}/chat")
+    def lesson_chat(session_id: str, body: ChatRequest = Body(...), ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        try:
+            message = (body.message or "").strip()
+            if not message:
+                raise HTTPException(status_code=400, detail="message is required")
+            check_message_size(message)
+            manifest = store.load_by_id(ctx, session_id)
+            if manifest.state != JobState.READY:
+                raise HTTPException(status_code=409, detail="lesson is not ready for chat yet")
+            if body.conversation_id:
+                conversation = load_conversation(storage, store, manifest, body.conversation_id)
+                check_conversation_turn_cap(conversation.user_message_count)
+            else:
+                check_conversation_turn_cap(0)
+            check_user_quota(storage, ctx.tenant_id, ctx.user_id)
+            # TODO(auth-and-byok): replace this shared-key construction with
+            # use_for_user(ctx.user_id) so chat uses the user's per-user Gemini key.
+            if os.environ.get("MASTERCLASS_LLM_PROVIDER", "gemini").lower() == "dry-run":
+                from masterclass.agent.dry_run import DryRunLlmProvider
+                provider = DryRunLlmProvider()
+            elif os.environ.get("GEMINI_API_KEY"):
+                from masterclass.agent.gemini import SharedKeyGeminiProvider
+                provider = SharedKeyGeminiProvider()
+            else:
+                provider = None
+            if provider is None:
+                raise HTTPException(status_code=503, detail="Gemini provider is not configured")
+            topic = topic_guard(storage, ctx.tenant_id, ctx.user_id, message, provider)
+            chat_model = os.environ.get(
+                "MASTERCLASS_TEACH_MODEL",
+                "gemini-2.5-pro",
+            )
+            result = run_chat_turn(
+                storage=storage,
+                store=store,
+                manifest=manifest,
+                provider=provider,
+                message=message,
+                conversation_id=body.conversation_id,
+                masterclasses=masterclasses,
+                config=ChatConfig(model=chat_model),
+                topic_guard_usage=topic.usage,
+            )
+            return {
+                "conversation_id": result.conversation_id,
+                "reply": result.reply,
+                "tool_calls": result.tool_calls,
+                "usage": result.usage,
+            }
+        except ChatGuardrailError as exc:
+            usage = exc.usage or chat_usage_dict(None)
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"reply": exc.detail, "usage": usage},
+            ) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson or conversation not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/lessons/{session_id}/chat")
+    def lesson_chat_list(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> list[dict]:
+        try:
+            manifest = store.load_by_id(ctx, session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson not found") from exc
+        return list_conversations(storage, store, manifest)
+
+    @app.get("/lessons/{session_id}/chat/{conv_id}")
+    def lesson_chat_history(session_id: str, conv_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        try:
+            manifest = store.load_by_id(ctx, session_id)
+            return load_conversation(storage, store, manifest, conv_id).to_json()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson or conversation not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/lessons/{session_id}/chat/{conv_id}")
+    def lesson_chat_delete(session_id: str, conv_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        try:
+            manifest = store.load_by_id(ctx, session_id)
+            delete_conversation(storage, store, manifest, conv_id)
+            return {"deleted": True, "conversation_id": conv_id}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson or conversation not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/sessions/{session_id}/source")
     async def upload_source(

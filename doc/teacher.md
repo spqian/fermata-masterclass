@@ -229,6 +229,35 @@ The teacher's final JSON (per the schema in the system instruction):
 
 `comments_enriched.json` includes the same plus a server-added `note_refs` field (resolved from `references[].note_id`) for the player's hover-overlay logic.
 
+## Chat mode
+
+After the initial lesson, the same teacher can answer follow-up questions through `engine/teach_chat.py`. Chat mode reuses the existing agentic infrastructure rather than duplicating it: `load_instrument_profile`, `system_instruction_for_profile`, `default_tool_registry`, `tool_catalog_text`, the evidence digest, score note inventory, score images, compact lesson audio, video frames, and the same structured tool-call loop. The scope is deliberately narrower than continuity mode: the teacher is scoped strictly to the current lesson and piece, not prior lessons or other masterclasses.
+
+The chat prompt starts from the normal instrument-aware system instruction and appends:
+
+```text
+## Chat mode
+
+You already gave the student a structured critique of THIS performance (their original lesson takeaway and comments are below). The student is now asking a follow-up question.
+
+- Stay STRICTLY scoped to this lesson and this piece. Do not invent new analyses of unrelated topics.
+- You may consult the audio (listen tool), video frames (watch / get_frames tools), or any inspection tool if it helps you give a better answer. Use them sparingly — at most 5 tool calls per response.
+- When citing measures, use the same measure numbering convention as the lesson comments.
+- If the question is off-topic for music performance, politely redirect.
+- Be concise — chat responses should be 1-3 paragraphs unless a longer explanation is genuinely needed.
+
+Original lesson takeaway:
+{LESSON_TAKEAWAY_JSON}
+
+Original lesson comments (severity, bar references, summary only):
+{COMMENTS_DIGEST}
+
+Conversation so far (most recent last):
+{CHAT_HISTORY}
+```
+
+Chat has stricter guardrails than the initial lesson: 2 KB messages, 20 user messages per conversation, 50 user messages per user per UTC day, a Gemini Flash topic guard before any Pro call, and at most 5 tool calls per response.
+
 ## Cost
 
 Per lesson:
@@ -254,3 +283,4 @@ Total: typically **$0.30-2.00 per lesson**. The teacher dominates.
 The mechanical-comments stage produces 80-120 raw flags per lesson (see `pipeline.md:Stage 10`). Most are noise — single-note pitch outliers at slow practice tempo, off-pulse notes by 100ms in a freely-rubato passage. The teacher reads them all in the evidence digest and selects 8-15 that matter musically.
 
 Each unselected mechanical comment lands in `dropped[]` with a one-line reason. The player's UI shows this as a collapsible expander so the user can audit "what did the teacher decide to skip and why?".
+

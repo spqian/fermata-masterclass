@@ -424,8 +424,60 @@ Note ID convention: `m{measure}_b{beat:.2f}_{pitch_names_joined_with_+}`. Stable
 }
 ```
 
+## Chat artifacts
+
+### `chat/{conversation_id}.json`
+
+One persisted chat thread for a processed lesson. v1 of the UI uses the most recent thread, but the backend schema allows multiple threads per lesson.
+
+```json
+{
+  "schema_version": 1,
+  "conversation_id": "6a92f...",
+  "session_id": "a933ec4b...",
+  "user_id": "pqian",
+  "created_at": "...",
+  "updated_at": "...",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What should I practice for the opening chord?",
+      "ts": "..."
+    },
+    {
+      "role": "teacher",
+      "content": "Start by separating attack from voicing...",
+      "ts": "...",
+      "tool_calls": [
+        {"turn": 1, "tool": "inspect_chord", "args": {"start_sec": 4.8, "end_sec": 6.2}, "status": "ok", "duration_sec": 0.41}
+      ],
+      "usage": {"input_tokens": 18000, "output_tokens": 700, "estimated_cost_usd": 0.0295, "model": "gemini-2.5-pro"}
+    }
+  ]
+}
+```
+
+`ChatMessage.role` is `user`, `teacher`, or `system`. Teacher messages may include the tool-call audit for that reply and the cost meter returned to the player.
+
+### `sessions/_user_quotas/{user_id}_{YYYYMMDD}.json`
+
+Daily chat quota row, reset by date key at midnight UTC.
+
+```json
+{
+  "schema_version": 1,
+  "user_id": "pqian",
+  "date_utc": "20260515",
+  "count": 12,
+  "limit": 50,
+  "updated_at": "..."
+}
+```
+
+Topic-guard decisions are cached for one hour under `sessions/_topic_guard_cache/{user_id}_{sha256(message)}.json` with `{ allowed, expires_at }`.
 ## Schema versioning
 
 All top-level docs include `schema_version: 1`. There has been no v2 schema change yet — when one happens, add a migration in the loader (e.g. `MasterclassStore.load_by_id` should detect `schema_version: 1` and upgrade to current).
 
 Unwritten convention: the `_meta` fields on engine artifacts (e.g. `score_prep.json._meta`) are not subject to schema versioning — they're free-form diagnostic info added by whichever module produced the artifact.
+

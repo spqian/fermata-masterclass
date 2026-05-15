@@ -407,6 +407,74 @@
     .tool-status.error { color: var(--danger); background: rgba(217,122,108,0.15); }
     .tool-call pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--ink-soft); }
 
+    .chat-panel {
+      margin-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      padding-top: 10px;
+      display: flex;
+      flex-direction: column;
+      min-height: 220px;
+      max-height: 42%;
+    }
+    .chat-panel .panel-title { margin-bottom: 8px; }
+    .chat-messages {
+      flex: 1;
+      min-height: 90px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 3px;
+    }
+    .chat-msg {
+      max-width: 92%;
+      padding: 9px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .chat-msg.user {
+      align-self: flex-end;
+      background: rgba(201,169,106,0.14);
+      border: 1px solid rgba(201,169,106,0.28);
+    }
+    .chat-msg.teacher {
+      align-self: flex-start;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.07);
+    }
+    .chat-msg.error { border-color: rgba(217,122,108,0.55); color: #f0b0a7; }
+    .chat-msg .gemini { color: var(--gold); font-weight: 700; margin-right: 5px; }
+    .chat-msg .cost { margin-top: 6px; color: var(--ink-mute); font: 10px/1.3 "JetBrains Mono", monospace; }
+    .chat-msg details { margin-top: 6px; color: var(--ink-mute); }
+    .chat-msg summary { cursor: pointer; font: 11px/1.3 "JetBrains Mono", monospace; color: var(--gold); }
+    .chat-input-row { display: flex; gap: 8px; margin-top: 8px; align-items: flex-end; }
+    .chat-input-row textarea {
+      flex: 1;
+      min-height: 40px;
+      max-height: 110px;
+      resize: none;
+      background: rgba(0,0,0,0.25);
+      color: var(--ink);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 4px;
+      padding: 8px;
+      font: 13px/1.4 "Inter", sans-serif;
+      outline: none;
+    }
+    .chat-input-row textarea:focus { border-color: var(--gold); }
+    .chat-input-row button {
+      background: rgba(201,169,106,0.16);
+      color: var(--gold);
+      border: 1px solid rgba(201,169,106,0.45);
+      border-radius: 4px;
+      padding: 9px 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chat-input-row button:disabled { opacity: 0.45; cursor: default; }
+
     .lesson-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
     .lesson-section h4 {
       font-size: 11px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
@@ -527,6 +595,14 @@
         <div id="comments-host" class="comments-scroll">
           <div class="pending" id="pending"><span class="spinner"></span>Lesson is still processing…</div>
         </div>
+        <div class="chat-panel" id="chat-panel" style="display:none">
+          <div class="panel-title"><span>Chat with the teacher</span><span class="opus" id="chat-status">—</span></div>
+          <div class="chat-messages" id="chat-messages"></div>
+          <form class="chat-input-row" id="chat-form">
+            <textarea id="chat-input" maxlength="2048" placeholder="Ask a follow-up about this lesson…"></textarea>
+            <button type="submit" id="chat-send">Send</button>
+          </form>
+        </div>
       </div>
     </section>
 
@@ -579,6 +655,22 @@
     async function fetchOptionalJson(url, fallback) {
       try { return await fetchJson(url); } catch (_) { return fallback; }
     }
+    async function postJson(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-User-Id": userId() },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const detail = data.detail || {};
+        const err = new Error((typeof detail === "object" && detail.reply) || detail || `${r.status}`);
+        err.payload = typeof detail === "object" ? detail : data;
+        err.status = r.status;
+        throw err;
+      }
+      return data;
+    }
     function fmtTime(seconds) {
       if (!isFinite(seconds)) return "–:––";
       const s = Math.floor(seconds);
@@ -601,6 +693,12 @@
     const commentCount = document.getElementById("comment-count");
     const costTag = document.getElementById("cost-tag");
     const scoreInfo = document.getElementById("score-info");
+    const chatPanel = document.getElementById("chat-panel");
+    const chatMessages = document.getElementById("chat-messages");
+    const chatForm = document.getElementById("chat-form");
+    const chatInput = document.getElementById("chat-input");
+    const chatSend = document.getElementById("chat-send");
+    const chatStatus = document.getElementById("chat-status");
 
     const scoreStage = document.getElementById("score-stage");
     const scoreImg = document.getElementById("score-img");
@@ -628,6 +726,8 @@
     let severityVisible = new Set(["info", "warn", "alert"]);
     let lastCommentsPayload = null;
     let following = true;
+    let chatConversationId = null;
+    let chatBusy = false;
     toggleFollow.addEventListener("click", () => {
       following = !following;
       toggleFollow.textContent = following ? "Following ✓" : "Manual";
@@ -943,6 +1043,105 @@
       for (const n of (scoreMap && scoreMap.notes) || []) if (n && n.note_id) scoreMapNoteById.set(String(n.note_id), n);
       renderAnchorMarkers();
     }
+
+    async function initChat() {
+      if (!chatPanel) return;
+      chatPanel.style.display = "flex";
+      chatStatus.textContent = "loading";
+      try {
+        const conversations = await fetchOptionalJson(`/lessons/${SESSION_ID}/chat`, []);
+        if (Array.isArray(conversations) && conversations.length) {
+          chatConversationId = conversations[0].conversation_id || conversations[0].id;
+          const history = await fetchJson(`/lessons/${SESSION_ID}/chat/${encodeURIComponent(chatConversationId)}`);
+          renderChatHistory(history.messages || []);
+          chatStatus.textContent = `${conversations[0].message_count || 0} msg`;
+        } else {
+          chatMessages.innerHTML = `<div class="empty">Ask a follow-up about this lesson.</div>`;
+          chatStatus.textContent = "new";
+        }
+      } catch (error) {
+        chatMessages.innerHTML = `<div class="chat-msg teacher error">${escapeHtml(error.message)}</div>`;
+        chatStatus.textContent = "error";
+      }
+    }
+
+    function renderChatHistory(messages) {
+      chatMessages.innerHTML = "";
+      for (const msg of messages || []) appendChatMessage(msg.role, msg.content, { tool_calls: msg.tool_calls || [], usage: msg.usage });
+      if (!chatMessages.children.length) chatMessages.innerHTML = `<div class="empty">Ask a follow-up about this lesson.</div>`;
+    }
+
+    function appendChatMessage(role, text, opts = {}) {
+      const empty = chatMessages.querySelector(".empty");
+      if (empty) empty.remove();
+      const div = document.createElement("div");
+      div.className = `chat-msg ${role === "user" ? "user" : "teacher"}${opts.error ? " error" : ""}`;
+      const toolCalls = opts.tool_calls || [];
+      const usage = opts.usage || null;
+      const toolHtml = toolCalls.length
+        ? `<details><summary>🔧 ${toolCalls.length} tool call${toolCalls.length === 1 ? "" : "s"}</summary>${toolCalls.map(c => `<div>${escapeHtml(toolCallLabel(c))}</div>`).join("")}</details>`
+        : "";
+      const costHtml = usage ? `<div class="cost">${escapeHtml(usage.model || "model")} · ${usage.input_tokens ?? "?"} in / ${usage.output_tokens ?? "?"} out · ${formatCost(usage.estimated_cost_usd)}</div>` : "";
+      div.innerHTML = `${role === "teacher" ? `<span class="gemini">✦</span>` : ""}${escapeHtml(text)}${toolHtml}${costHtml}`;
+      chatMessages.appendChild(div);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function toolCallLabel(call) {
+      const name = call.tool || call.name || "tool";
+      const args = call.args || {};
+      if (args.measure || args.midi_measure) return `${name} checked bar ${args.measure || args.midi_measure}`;
+      if (args.start_sec != null || args.end_sec != null) return `${name} from ${args.start_sec ?? "?"}–${args.end_sec ?? "?"}s`;
+      return name;
+    }
+    function formatCost(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? `$${n.toFixed(4)}` : "$—";
+    }
+
+    chatInput.addEventListener("input", () => {
+      chatInput.style.height = "auto";
+      chatInput.style.height = `${Math.min(chatInput.scrollHeight, 110)}px`;
+      const tooLarge = new Blob([chatInput.value]).size > 2048;
+      chatSend.disabled = chatBusy || tooLarge;
+      chatStatus.textContent = tooLarge ? "2KB max" : (chatConversationId ? "ready" : "new");
+    });
+    chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (chatBusy) return;
+      const message = (chatInput.value || "").trim();
+      if (!message) return;
+      if (new Blob([message]).size > 2048) {
+        appendChatMessage("teacher", "Please keep chat questions under 2 KB.", { error: true });
+        return;
+      }
+      chatBusy = true;
+      chatSend.disabled = true;
+      chatInput.value = "";
+      chatInput.style.height = "auto";
+      appendChatMessage("user", message);
+      const typing = document.createElement("div");
+      typing.className = "chat-msg teacher";
+      typing.innerHTML = `<span class="gemini">✦</span>Thinking…`;
+      chatMessages.appendChild(typing);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      try {
+        const payload = await postJson(`/lessons/${SESSION_ID}/chat`, { message, conversation_id: chatConversationId });
+        typing.remove();
+        chatConversationId = payload.conversation_id || chatConversationId;
+        appendChatMessage("teacher", payload.reply || "", { tool_calls: payload.tool_calls || [], usage: payload.usage });
+        chatStatus.textContent = "ready";
+      } catch (error) {
+        typing.remove();
+        appendChatMessage("teacher", error.message, { error: true, usage: error.payload && error.payload.usage });
+        chatStatus.textContent = error.status || "error";
+      } finally {
+        chatBusy = false;
+        chatSend.disabled = false;
+        chatInput.focus();
+      }
+    });
+
     function scoreMapBarsForCurrentSystem() {
       if (!scoreMap || !Array.isArray(scoreMap.bars) || !currentPage || !currentSystem) return [];
       return scoreMap.bars.filter(b => {
@@ -1328,6 +1527,7 @@
           renderScore(prep);
           renderComments(c);
           renderToolCalls(tcalls);
+          initChat();
           stopPolling();
         } else if (session.state === "failed") {
           commentsHost.innerHTML = `<div class="empty" style="color:var(--danger)">Lesson processing failed. Check the home page.</div>`;
