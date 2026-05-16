@@ -1437,6 +1437,8 @@ def create_app():
             "dtw": "analysis/dtw_aligned_notes.json",
             "basic_pitch": "analysis/basic_pitch_notes.json",
             "basic_pitch_matched": "analysis/basic_pitch_matched_notes.json",
+            "piano_transcription": "analysis/piano_transcription_notes.json",
+            "piano_transcription_matched": "analysis/piano_transcription_matched_notes.json",
         }
         if src not in artifact_by_src:
             raise HTTPException(status_code=400, detail=f"unknown alignment source: {source}")
