@@ -526,15 +526,18 @@ def create_app():
         instrument_profile: str | None = None
         notes: str | None = None
 
-    def tenant_from_header(
-        request: Request,
-        x_user_id: str | None = Header(default=None, alias="X-User-Id"),
-        user_id: str | None = None,
-    ) -> TenantContext:
-        # Session identity wins for browsers; X-User-Id/query fallback stays for scripts and CI.
-        resolved = (get_session_user_id(request) or x_user_id or user_id or "").strip()
+    def tenant_from_header(request: Request) -> TenantContext:
+        """Resolve the caller's tenant strictly from the signed session cookie.
+
+        The previous X-User-Id header and ?user_id= query fallbacks were a full
+        IDOR primitive — any client could impersonate any account by setting the
+        header. Now identity comes solely from the HttpOnly session cookie that
+        ``set_session_cookie`` produces after a verified Google sign-in. Forging
+        the cookie requires MASTERCLASS_KEY_ENCRYPTION_KEY.
+        """
+        resolved = (get_session_user_id(request) or "").strip()
         if not resolved:
-            raise HTTPException(status_code=401, detail="Sign in or provide X-User-Id header")
+            raise HTTPException(status_code=401, detail="Sign in with Google to continue")
         try:
             return TenantContext(tenant_id=resolved, user_id=resolved)
         except ValueError as exc:
@@ -573,46 +576,9 @@ def create_app():
         return response
 
     @app.get("/auth/dev-login")
-    def auth_dev_login(
-        request: Request,
-        as_: str = Query("dev@fermata.local", alias="as"),
-        next: str = "/",
-    ):
-        """Dev-only sign-in bypass — never enabled in production.
-
-        Accepts an arbitrary email via the `as_` query param (FastAPI strips the
-        trailing underscore so the URL is `?as=you@example.com`) and seeds a
-        UserProfile + session cookie equivalent to a real Google callback.
-
-        Gated by MASTERCLASS_DEV_LOGIN=true. With MASTERCLASS_PRODUCTION=true,
-        the endpoint always returns 404 even if the dev flag is set.
-        """
-        if os.environ.get("MASTERCLASS_PRODUCTION", "").lower() == "true":
-            raise HTTPException(status_code=404, detail="Not Found")
-        if os.environ.get("MASTERCLASS_DEV_LOGIN", "").lower() != "true":
-            raise HTTPException(
-                status_code=404,
-                detail="Dev login is disabled. Set MASTERCLASS_DEV_LOGIN=true in .env to enable for local testing.",
-            )
-        email = (as_ or "").strip().lower()
-        if not email or "@" not in email:
-            raise HTTPException(status_code=400, detail="?as= must be an email-like string")
-        # Use a stable, deterministic id so re-logins as the same address
-        # don't fork into multiple profiles. The "dev-" prefix keeps it from
-        # ever colliding with a real Google `sub` (which is numeric).
-        # Note: we use "-" (not ":") because Windows treats ":" in filenames
-        # as an Alternate Data Stream separator.
-        fake_sub = f"dev-{email}"
-        display = email.split("@", 1)[0]
-        profile = user_profiles.upsert_oauth_user(
-            google_sub=fake_sub,
-            email=email,
-            display_name=display,
-        )
-        target = next if (next or "").startswith("/") else "/"
-        response = RedirectResponse(target, status_code=302)
-        set_session_cookie(response, request, profile.google_sub)
-        return response
+    def auth_dev_login() -> None:
+        """Removed. Use real Google OAuth via /auth/login."""
+        raise HTTPException(status_code=404, detail="Not Found")
 
     @app.get("/auth/me")
     def auth_me(request: Request) -> dict:

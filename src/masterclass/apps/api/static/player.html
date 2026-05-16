@@ -535,7 +535,7 @@
     <div class="brand">
       <div class="mark">m</div>
       <span>Music Masterclass</span>
-      <a href="/?user_id=pqian">← back</a>
+      <a href="/">← back</a>
     </div>
     <div class="meta">
       <span class="alignment-tag llm" id="alignment-tag" title="Alignment source">…</span>
@@ -617,12 +617,8 @@
   <script>
     const SESSION_ID = "__SESSION_ID__";
     const urlParams = new URLSearchParams(window.location.search);
-    const initialUserId = (urlParams.get("user_id") || "").trim();
     let currentUser = null;
-    const devUserId = initialUserId || "pqian";
     document.getElementById("session-id").textContent = SESSION_ID.slice(0, 12) + "…";
-
-    function userId() { return (currentUser && currentUser.google_sub) || devUserId; }
 
     async function initAuthPill() {
       const pill = document.getElementById("auth-pill");
@@ -645,9 +641,12 @@
       document.addEventListener("click", (e) => { if (!e.target.closest(".user-menu")) dropdown.classList.remove("open"); });
     }
 
-    function uquery() { return `?user_id=${encodeURIComponent(userId())}`; }
+    // Identity travels via the HttpOnly session cookie the browser sends
+    // automatically. No X-User-Id header, no ?user_id= query string — both
+    // were impersonation primitives before /auth/login existed.
+    function uquery() { return ""; }
     async function fetchJson(url) {
-      const r = await fetch(url, { headers: { "X-User-Id": userId() } });
+      const r = await fetch(url);
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.detail || `${r.status}`);
       return data;
@@ -658,7 +657,7 @@
     async function postJson(url, body) {
       const r = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-User-Id": userId() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       const data = await r.json().catch(() => ({}));
