@@ -191,7 +191,15 @@
               <label class="overlay-toggle" title="Show score-expected pitches from the HMM alignment as thin horizontal bars">
                 <input type="checkbox" id="hmm-overlay-toggle" checked>
                 <span><span class="legend-dot melody"></span>melody &nbsp;<span class="legend-dot chord"></span>chord</span>
-                &nbsp;HMM overlay
+                &nbsp;overlay
+              </label>
+              <label class="overlay-toggle" style="margin-left:10px;" title="Which alignment engine to overlay">
+                source
+                <select id="alignment-source" style="background:rgba(255,255,255,.03); color:var(--ink); border:1px solid rgba(255,255,255,.12); border-radius:3px; padding:3px 6px; font-family:'JetBrains Mono',monospace; font-size:11px;">
+                  <option value="hmm">HMM (monophonic + fallback)</option>
+                  <option value="dtw">DTW (chroma · polyphonic)</option>
+                  <option value="basic_pitch">basic-pitch (audio-only)</option>
+                </select>
               </label>
               <span class="specgram-status" id="spec-status"></span>
             </div>
@@ -582,14 +590,32 @@
     }
   }
 
-  async function ensureHmmLoaded() {
-    if (hmmNotes.length) return;
+  let alignmentSource = "hmm";  // "hmm" | "dtw" | "basic_pitch" - chosen via dropdown
+  let alignedNotes = [];        // notes for the currently-selected source
+  async function loadAlignedNotes(force = false) {
+    if (!force && alignedNotes.length && alignedNotes._source === alignmentSource) return;
     try {
-      const data = await api(`/lessons/${SESSION_ID}/debug/hmm-aligned-notes`);
-      hmmNotes = Array.isArray(data.notes) ? data.notes : [];
+      const data = await api(`/lessons/${SESSION_ID}/debug/aligned-notes?source=${encodeURIComponent(alignmentSource)}`);
+      alignedNotes = Array.isArray(data.notes) ? data.notes : [];
+      alignedNotes._source = alignmentSource;
+      alignedNotes._method = data.method || alignmentSource;
     } catch (e) {
-      document.getElementById("hmm-body").innerHTML = `<div class="placeholder">HMM data unavailable: ${escapeHtml(e.message)}</div>`;
+      alignedNotes = [];
+      alignedNotes._source = alignmentSource;
+      // Surface the missing-artifact case clearly in the HMM panel instead of
+      // silently showing an empty overlay.
+      const body = document.getElementById("hmm-body");
+      if (body) body.innerHTML = `<div class="placeholder">No <code>${escapeHtml(alignmentSource)}</code> alignment for this lesson: ${escapeHtml(e.message)}</div>`;
     }
+  }
+
+  async function ensureHmmLoaded() {
+    // Backwards-compatible name: this used to load only the HMM, but now it
+    // honours the user-selected alignment source. Kept the name so existing
+    // call sites in renderHmmWindow + the spectrogram image-load handler
+    // continue to work.
+    await loadAlignedNotes();
+    hmmNotes = alignedNotes;
   }
 
   // ---------- HMM overlay ----------
@@ -653,9 +679,8 @@
       return t >= start && t <= end;
     });
     const body = document.getElementById("hmm-body");
-    document.getElementById("hmm-badge").textContent = `${win.length} of ${hmmNotes.length} notes in window`;
-    // Also draw the overlay on the spectrogram so the user can read which
-    // bright band corresponds to the score-expected pitch.
+    const method = alignedNotes._method || alignmentSource;
+    document.getElementById("hmm-badge").textContent = `${win.length} of ${hmmNotes.length} notes in window · ${method}`;
     renderHmmOverlay(win, start, end);
     if (!win.length) { body.innerHTML = `<div class="placeholder">no aligned notes in this window</div>`; return; }
     const rows = win.map(n => {
@@ -747,6 +772,16 @@
   });
   document.getElementById("hmm-overlay-toggle").addEventListener("change", (ev) => {
     document.getElementById("hmm-overlay").classList.toggle("on", ev.target.checked);
+  });
+  document.getElementById("alignment-source").addEventListener("change", async (ev) => {
+    alignmentSource = ev.target.value;
+    hmmNotes = [];
+    alignedNotes = [];
+    if (currentComment) {
+      const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
+      const end = (currentComment.end ?? start + 3) + 0.5;
+      await renderHmmWindow(start, end);
+    }
   });
 
   // Bootstrap

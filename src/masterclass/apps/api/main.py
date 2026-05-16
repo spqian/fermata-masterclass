@@ -1411,6 +1411,56 @@ def create_app():
         payload = storage.read_json(key)
         return payload if isinstance(payload, dict) else {"analysis": payload}
 
+    @app.get("/lessons/{session_id}/debug/aligned-notes")
+    def debug_aligned_notes(
+        session_id: str,
+        source: str = "hmm",
+        start: float | None = None,
+        end: float | None = None,
+        ctx: TenantContext = Depends(_pro_ctx),
+    ) -> dict:
+        """Unified alignment endpoint: serve HMM, DTW, or basic-pitch notes.
+
+        ``source`` chooses the alignment artifact:
+          - ``hmm``         -> analysis/hmm_aligned_notes.json  (monophonic HMM
+                              + expected-tempo fallback; current default)
+          - ``dtw``         -> analysis/dtw_aligned_notes.json  (chroma DTW
+                              against reference MIDI, polyphonic; populated by
+                              scripts/run_chroma_dtw_for_session.py)
+          - ``basic_pitch`` -> analysis/basic_pitch_notes.json  (audio-only
+                              polyphonic note detection from Spotify's
+                              basic-pitch model; no score needed)
+        """
+        src = (source or "hmm").lower().strip()
+        artifact_by_src = {
+            "hmm": "analysis/hmm_aligned_notes.json",
+            "dtw": "analysis/dtw_aligned_notes.json",
+            "basic_pitch": "analysis/basic_pitch_notes.json",
+        }
+        if src not in artifact_by_src:
+            raise HTTPException(status_code=400, detail=f"unknown alignment source: {source}")
+        _, key = _load_lesson_artifact(ctx, session_id, artifact_by_src[src])
+        if not key:
+            raise HTTPException(status_code=404, detail=f"no {src} aligned notes for this lesson")
+        payload = storage.read_json(key)
+        notes = payload.get("notes") if isinstance(payload, dict) else None
+        if not isinstance(notes, list):
+            return payload if isinstance(payload, dict) else {"notes": [], "source": src}
+        if start is not None or end is not None:
+            lo = start if start is not None else float("-inf")
+            hi = end if end is not None else float("inf")
+            notes = [
+                n for n in notes
+                if isinstance(n, dict)
+                and lo <= float(n.get("performed_time_sec", n.get("perf_time", 0.0)) or 0.0) <= hi
+            ]
+        return {
+            "notes": notes,
+            "source": src,
+            "method": payload.get("method") if isinstance(payload, dict) else None,
+            "schema_version": payload.get("schema_version") if isinstance(payload, dict) else None,
+        }
+
     @app.get("/lessons/{session_id}/debug/hmm-aligned-notes")
     def debug_hmm_notes(
         session_id: str,
