@@ -180,13 +180,18 @@ def create_app():
             ], timeout_sec=900)
             return dst.read_bytes()
 
-    def _run_lesson_jobs(session_id: str, tenant_id: str, user_id: str, masterclass_id: str | None) -> None:
+    def _run_lesson_jobs(session_id: str, tenant_id: str, user_id: str, masterclass_id: str | None, *, resume: bool = False) -> None:
         """Drain a lesson's queued jobs sequentially inside this API process.
 
         MVP equivalent of an out-of-process worker: keeps the API responsive
         for upload, runs deterministic engine steps in the background, then
         runs the multimodal teacher, and updates session state so the UI can
         poll progress.
+
+        When ``resume=True``, every stage whose ``{stage}_state`` is already
+        ``ready`` (or a ``skipped*`` variant) is skipped — the pipeline only
+        re-runs failed / pending stages. This is what /retry-failed uses so
+        a transient Gemini API error doesn't force a 4-minute re-ingest.
         """
 
         import logging
@@ -201,17 +206,31 @@ def create_app():
                     manifest.metadata[f"{stage}_updated_at"] = datetime.now(UTC).isoformat()
                     store.save(manifest)
 
-                mark_stage("extract_media", "running")
-                manifest = extract_media_artifacts(store=store, storage=storage, ffmpeg=ffmpeg, manifest=manifest, frame_interval_sec=10.0)
-                mark_stage("extract_media", "ready")
+                def _stage_done(stage: str) -> bool:
+                    """In resume mode, a stage is done if it's ready or skipped*."""
+                    if not resume:
+                        return False
+                    cur = manifest.metadata.get(f"{stage}_state") or ""
+                    return cur == "ready" or cur.startswith("skipped")
 
-                mark_stage("analyze", "running")
-                manifest = analyze_session(store=store, storage=storage, manifest=manifest)
-                mark_stage("analyze", "ready")
+                def run_required(stage: str, func) -> None:
+                    """Strict stage: failure aborts the whole pipeline. Skip if
+                    resuming and already done."""
+                    if _stage_done(stage):
+                        return
+                    mark_stage(stage, "running")
+                    result = func()
+                    if result is not None and hasattr(result, "metadata"):
+                        # extract_media/analyze/build_evidence_packet return a
+                        # fresh manifest. Update our local binding so subsequent
+                        # mark_stage / run_required calls see the latest state.
+                        nonlocal manifest
+                        manifest = result
+                    mark_stage(stage, "ready")
 
-                mark_stage("evidence_packet", "running")
-                manifest = build_evidence_packet(store=store, storage=storage, manifest=manifest)
-                mark_stage("evidence_packet", "ready")
+                run_required("extract_media", lambda: extract_media_artifacts(store=store, storage=storage, ffmpeg=ffmpeg, manifest=manifest, frame_interval_sec=10.0))
+                run_required("analyze", lambda: analyze_session(store=store, storage=storage, manifest=manifest))
+                run_required("evidence_packet", lambda: build_evidence_packet(store=store, storage=storage, manifest=manifest))
 
                 def warn_stage(stage: str, exc: Exception) -> None:
                     manifest.metadata[f"{stage}_state"] = "failed"
@@ -225,6 +244,8 @@ def create_app():
                     store.save(manifest)
 
                 def run_best_effort(stage: str, func) -> None:
+                    if _stage_done(stage):
+                        return
                     manifest.metadata[f"{stage}_state"] = "running"
                     store.save(manifest)
                     try:
@@ -1627,6 +1648,47 @@ def create_app():
             _logging.getLogger(__name__).exception("rebuild-audio-truth failed for %s", session_id)
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         return summary
+
+    @app.post("/lessons/{session_id}/retry-failed")
+    def retry_failed_stages(
+        session_id: str,
+        ctx: TenantContext = Depends(tenant_from_header),
+    ) -> dict:
+        """Re-run ONLY the failed (or never-started) stages of a lesson.
+
+        Differs from /rerun in that any stage whose ``{stage}_state`` is
+        already ``ready`` is left untouched — its artifact is reused. This
+        is the right action for transient errors like a Gemini File-API
+        upload-terminated where the upstream stages all finished cleanly
+        and we just need to retry the teacher. A 4-minute re-ingest is
+        wasteful in that case.
+        """
+        manifest = store.load_by_id(ctx, session_id)
+        masterclass_id = manifest.metadata.get("masterclass_id")
+        # Wipe failed-stage errors so the UI shows them as running again.
+        cleared: list[str] = []
+        for stage in (
+            "extract_media", "analyze", "evidence_packet",
+            "onsets", "audio_truth", "score_map",
+            "intonation", "rhythm", "voicing",
+            "mechanical_comments", "teach",
+        ):
+            state = manifest.metadata.get(f"{stage}_state")
+            if state in ("failed", "running") or state is None:
+                manifest.metadata[f"{stage}_state"] = "pending"
+                manifest.metadata[f"{stage}_error"] = None
+                cleared.append(stage)
+        manifest.state = JobState.UPLOADED
+        store.save(manifest)
+        _spawn(
+            _run_lesson_jobs,
+            manifest.session.session_id,
+            manifest.session.tenant_id,
+            manifest.session.user_id,
+            masterclass_id,
+            resume=True,
+        )
+        return {"session_id": session_id, "retried_stages": cleared, "state": manifest.state.value}
 
     @app.post("/lessons/{session_id}/rerun")
     def rerun_lesson_pipeline(
