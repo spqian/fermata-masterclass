@@ -10,6 +10,7 @@ import io
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.models import SessionManifest
 from masterclass.core.sessions import SessionStore
 from masterclass.storage.base import ObjectStorage
@@ -52,15 +53,17 @@ def analyze_voicing(
 
     del store  # Artifact keys are read from the manifest in the analysis step.
     config = config or VoicingConfig()
-    audio_key = manifest.artifacts.get("artifacts/audio.wav")
+    catalog = ArtifactCatalog(manifest)
+    audio_key = catalog.audio_wav()
     if not audio_key:
         raise ValueError("manifest is missing artifacts/audio.wav; run ingestion first")
 
     import librosa
     import numpy as np
 
-    from masterclass.engine.aligned_notes import load_aligned_notes
-    notes = _normalized_aligned_notes(load_aligned_notes(storage, manifest))
+    from masterclass.engine.aligned_notes import load_aligned_notes_source
+    notes_key, raw_notes = load_aligned_notes_source(storage, manifest)
+    notes = _normalized_aligned_notes([n.to_dict() for n in raw_notes])
     if not notes:
         raise RuntimeError("no aligned notes available for voicing analysis (audio_truth pipeline must run first)")
 
@@ -91,7 +94,7 @@ def analyze_voicing(
             "movement": manifest.movement,
             "instrument_profile": manifest.instrument_profile,
             "audio": audio_key,
-            "aligned_notes": notes_key,
+            "aligned_notes": catalog.aligned_notes(),
             "method_notes": _method_notes(),
             "score_follower_note": (
                 "This module consumes the global HMM aligned-note artifact. "

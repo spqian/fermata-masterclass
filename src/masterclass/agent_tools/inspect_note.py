@@ -15,30 +15,44 @@ def inspect_note(storage: ObjectStorage, session: SessionRef, args: dict[str, An
     sm = read_json(storage, session, "score/score_map.json", None)
     if sm is None:
         return {"error": "score/score_map.json missing"}
+    # Scope to the played range: refuse to look up a note in a measure the
+    # player never played. Without this gate the teacher agent can ask
+    # about m.36 in an m.1-8 lesson and get back stale matcher noise.
+    from masterclass.core.played_range import derive_played_range_from_score_map
+    played_range = derive_played_range_from_score_map(sm)
+    if played_range is not None and not played_range.contains(midi_measure):
+        return {
+            "error": (
+                f"measure {midi_measure} is outside the played range "
+                f"{played_range.label()} (source={played_range.source}); "
+                "inspect_note only accepts measures the player actually played."
+            ),
+            "played_range": {
+                "first_measure": played_range.first_measure,
+                "last_measure": played_range.last_measure,
+                "source": played_range.source,
+            },
+        }
     note = find_score_note(sm, midi_measure, beat, pitch)
     if not note:
         return {"error": f"no note at m{midi_measure} beat={beat} pitch={pitch}"}
     out: dict[str, Any] = {"score_map_note": note}
     st = note_score_time(note)
     # Audio-truth match: find the detected note whose matched score-time
-    # closest matches the requested score-time. The matcher stores the
-    # score time the note was matched against under score_time_sec; legacy
-    # consumers also looked under score_time_in_movement / score_time_local
-    # which the shim aliases.
-    at = read_json(storage, session, "analysis/audio_truth_matched_notes.json", {}) or {}
-    if not at:
-        at = read_json(storage, session, "analysis/audio_truth_notes.json", {}) or {}
-    at_notes = at.get("notes") if isinstance(at, dict) else None
+    # closest matches the requested score-time. Routed through the typed
+    # aligned-notes accessor (matched > raw > hmm shim) so we see the
+    # canonical schema (score_time_sec / score_midi_pitch) regardless of
+    # which on-disk artifact won.
+    from masterclass.engine.aligned_notes import load_aligned_notes_for_session
+    at_notes = [n.to_dict() for n in load_aligned_notes_for_session(storage, session)]
     if at_notes and st is not None:
         # Prefer matched-by-measure-and-pitch; fall back to nearest-score-time.
         target_pitch = note.get("pitch_midi") or note.get("midi_pitch")
         match = None
         for n in at_notes:
-            if not isinstance(n, dict):
-                continue
             if int(n.get("measure") or -999) != midi_measure:
                 continue
-            score_t = n.get("score_time_sec") or n.get("score_time_in_movement")
+            score_t = n.get("score_time_sec")
             if score_t is None or abs(float(score_t) - st) > 0.05:
                 continue
             if target_pitch is not None and n.get("score_midi_pitch") is not None:

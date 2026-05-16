@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.masterclasses import MasterclassStore
 from masterclass.core.models import MasterclassManifest, SessionManifest, TenantContext
 from masterclass.core.sessions import SessionStore
@@ -34,7 +35,8 @@ class ScoreMapConfig:
     trailing_x_pad_frac: float = 0.04
     beats_per_bar: float = 4.0
     chord_time_round_digits: int = 4
-    hmm_score_time_round_digits: int = 3
+    align_score_time_round_digits: int = 3
+    hmm_score_time_round_digits: int = 3  # deprecated alias for align_score_time_round_digits
     copy_score_images_to_session: bool = True
 
 
@@ -127,7 +129,7 @@ def build_score_map(
         played_lo=played_lo,
         played_hi=played_hi,
         score_key=score_key,
-        hmm_notes=_load_hmm_notes(storage, manifest),
+        aligned_notes=_load_aligned_notes(storage, manifest),
         config=config,
     )
     total_measures = total_measures or max((int(n.get("measure") or 0) for n in score_notes), default=0) or len(notes)
@@ -144,13 +146,13 @@ def build_score_map(
         "played_lo": played_lo,
         "played_hi": played_hi,
         "total_measures": total_measures,
-        "alignment_source": "hmm_viterbi" if _has_hmm_times(notes) else "midi_only",
+        "alignment_source": "audio_truth" if _has_aligned_perf_times(notes) else "midi_only",
         "systems": systems,
         "bars": bars,
         "notes": notes,
         "notes_help": [
             "Each note has stable note_id, MIDI measure/beat, score_time, perf_time, names, MIDI pitches, and score x fractions.",
-            "perf_time is read from analysis/hmm_aligned_notes.json when present; otherwise it is null.",
+            "perf_time is read from the canonical aligned-notes artifact (analysis/audio_truth_matched_notes.json, with legacy aliases analysis/aligned_notes.json and analysis/hmm_aligned_notes.json) when present; otherwise it is null.",
             "Bar image/bbox entries are derived from masterclass reference/score_prep.json systems.",
         ],
         "_meta": {
@@ -236,17 +238,13 @@ def _find_midi_key(storage: ObjectStorage, masterclass: MasterclassManifest, man
 
 
 def _find_musicxml_key(storage: ObjectStorage, masterclass: MasterclassManifest, manifest: SessionManifest) -> str | None:
-    """Locate the MusicXML reference. Same lookup pattern as audio_truth uses."""
-    for key_name in (
-        "reference/musicxml.musicxml",
-        "reference/musicxml.mxl",
-        "reference/musicxml",
-    ):
-        for source in (masterclass, manifest):
-            prefix = "masterclass/" if source is manifest else ""
-            key = _artifact(source, f"{prefix}{key_name}")
-            if key and storage.exists(key):
-                return key
+    """Locate the MusicXML reference. Delegates to ArtifactCatalog so the
+    extension priority list (.musicxml -> .mxl -> bare) is defined in one
+    place. Both manifests are consulted because some lessons only stamp
+    the masterclass manifest with the reference key."""
+    key = ArtifactCatalog(manifest, masterclass).musicxml()
+    if key and storage.exists(key):
+        return key
     return None
 
 
@@ -553,7 +551,7 @@ def _build_notes(
     played_lo: int,
     played_hi: int,
     score_key: str | None,
-    hmm_notes: list[dict[str, Any]],
+    aligned_notes: list[dict[str, Any]],
     config: ScoreMapConfig,
 ) -> list[dict[str, Any]]:
     """Build per-note score-map rows from a list of normalized score notes.
@@ -601,7 +599,7 @@ def _build_notes(
             "measure": int(note.get("measure") or 0),
         })
 
-    hmm_lookup, hmm_conf, hmm_dwell = _hmm_lookups(hmm_notes, config=config)
+    align_lookup, align_conf, align_dwell = _aligned_lookups(aligned_notes, config=config)
     bar_by_measure = {int(bar["midi_measure"]): bar for bar in bars}
     events_by_measure: dict[int, list[float]] = {}
     for score_time, evs in events_by_score_time.items():
@@ -635,8 +633,8 @@ def _build_notes(
             beat = 1.0 + float(config.beats_per_bar) * (float(score_time) - float(db_start)) / bar_dur
             nx0 = float(x0) + (index / n_events) * bar_width
             nx1 = float(x0) + ((index + 1) / n_events) * bar_width
-            lookup_key = round(float(score_time), config.hmm_score_time_round_digits)
-            perf_time = hmm_lookup.get(lookup_key)
+            lookup_key = round(float(score_time), config.align_score_time_round_digits)
+            perf_time = align_lookup.get(lookup_key)
             out.append(
                 {
                     "note_id": make_note_id(measure, beat, names),
@@ -652,41 +650,50 @@ def _build_notes(
                     "pitch_midi": pitches[0] if len(pitches) == 1 else pitches,
                     "midi_pitches": pitches,
                     "is_chord": len(notes_at) > 1,
-                    "hmm_confidence": hmm_conf.get(lookup_key, "none"),
-                    "hmm_dwell_sec": hmm_dwell.get(lookup_key, 0.0),
+                    "align_confidence": align_conf.get(lookup_key, "none"),
+                    "align_dwell_sec": align_dwell.get(lookup_key, 0.0),
+                    # Legacy aliases; will be removed once consumers migrate
+                    # to ``align_confidence`` / ``align_dwell_sec``.
+                    "hmm_confidence": align_conf.get(lookup_key, "none"),
+                    "hmm_dwell_sec": align_dwell.get(lookup_key, 0.0),
                     "interpolated": False,
                     "is_bar_anchor": index == 0,
-                    "confidence": "high" if index == 0 else hmm_conf.get(lookup_key, "none"),
+                    "confidence": "high" if index == 0 else align_conf.get(lookup_key, "none"),
                 }
             )
     out.sort(key=lambda row: (int(row["midi_measure"]), float(row["score_time"]), str(row["note_id"])))
     return out
 
 
-def _load_hmm_notes(storage: ObjectStorage, manifest: SessionManifest) -> list[dict[str, Any]]:
-    """Score_map's per-note source. Was a direct read of the HMM artifacts;
-    now reads the unified aligned-notes accessor which prefers
-    audio_truth_matched_notes.json."""
+def _load_aligned_notes(storage: ObjectStorage, manifest: SessionManifest) -> list[dict[str, Any]]:
+    """Score_map's per-note source. Reads the unified aligned-notes
+    accessor (preferring audio_truth_matched_notes.json) and serializes
+    the typed dataclasses back to dicts for the legacy lookup helpers
+    below."""
     from masterclass.engine.aligned_notes import load_aligned_notes
-    return load_aligned_notes(storage, manifest)
+    return [n.to_dict() for n in load_aligned_notes(storage, manifest)]
 
 
-def _hmm_lookups(
-    hmm_notes: list[dict[str, Any]], *, config: ScoreMapConfig
+def _aligned_lookups(
+    aligned_notes: list[dict[str, Any]], *, config: ScoreMapConfig
 ) -> tuple[dict[float, float], dict[float, str], dict[float, float]]:
     perf: dict[float, float] = {}
     conf: dict[float, str] = {}
     dwell: dict[float, float] = {}
-    for note in hmm_notes:
-        score_time = _as_float(note.get("score_time_in_movement"), note.get("score_time"), default=None)
+    for note in aligned_notes:
+        score_time = _as_float(note.get("score_time_sec"), note.get("score_time_in_movement"), note.get("score_time"), default=None)
         perf_time = _as_float(note.get("performed_time_sec"), note.get("perf_time"), default=None)
         if score_time is None or perf_time is None:
             continue
-        key = round(score_time, config.hmm_score_time_round_digits)
+        key = round(score_time, config.align_score_time_round_digits)
         perf[key] = perf_time
         conf[key] = str(note.get("confidence") or "low")
         dwell[key] = float(_as_float(note.get("dwell_sec"), default=0.0) or 0.0)
     return perf, conf, dwell
+
+
+# Deprecated alias; remove once no external callers import the old name.
+_hmm_lookups = _aligned_lookups
 
 
 def _midi_measure_count(*args, **kwargs) -> int:
@@ -694,8 +701,12 @@ def _midi_measure_count(*args, **kwargs) -> int:
     return 0
 
 
-def _has_hmm_times(notes: list[dict[str, Any]]) -> bool:
+def _has_aligned_perf_times(notes: list[dict[str, Any]]) -> bool:
     return any(note.get("perf_time") is not None for note in notes)
+
+
+# Deprecated alias for callers still using the HMM-era name.
+_has_hmm_times = _has_aligned_perf_times
 
 
 def _as_int(*values: Any, default: int | None = None) -> int | None:

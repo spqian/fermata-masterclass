@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.models import JobState, SessionManifest
 from masterclass.core.sessions import SessionStore
 from masterclass.storage.base import ObjectStorage
@@ -26,7 +27,8 @@ def analyze_session(
     config: AnalysisConfig | None = None,
 ) -> SessionManifest:
     config = config or AnalysisConfig()
-    audio_key = manifest.artifacts.get("artifacts/audio.wav")
+    catalog = ArtifactCatalog(manifest)
+    audio_key = catalog.audio_wav()
     if not audio_key:
         raise ValueError("manifest is missing artifacts/audio.wav; run ingestion first")
 
@@ -110,7 +112,7 @@ def analyze_audio_file(audio_path: Path, manifest: SessionManifest, config: Anal
             "preview_first_40": pitch_events[:40],
         },
         "artifacts": {
-            "audio_wav": manifest.artifacts.get("artifacts/audio.wav"),
+            "audio_wav": ArtifactCatalog(manifest).audio_wav(),
             "metadata_json": manifest.artifacts.get("artifacts/metadata.json"),
         },
     }
@@ -250,7 +252,7 @@ def analysis_markdown(analysis: dict[str, Any]) -> str:
 
 
 def _audio_truth_pitch_rows(storage: ObjectStorage, manifest: SessionManifest, limit: int | None = 40) -> list[dict[str, Any]]:
-    """Return per-note rows derived from analysis/audio_truth_matched_notes.json
+    """Return per-note rows derived from the lesson's aligned-notes timeline
     suitable for embedding in the evidence packet markdown.
 
     Each row carries the score-expected pitch, the detected pitch, the
@@ -259,24 +261,15 @@ def _audio_truth_pitch_rows(storage: ObjectStorage, manifest: SessionManifest, l
     is what closes the "teacher reasons over CREPE while user reasons over
     audio-truth" inconsistency that drove the 'is the C sharp' hallucination.
     """
-    key = manifest.artifacts.get("analysis/audio_truth_matched_notes.json")
-    if not key:
-        return []
-    try:
-        doc = storage.read_json(key)
-    except (FileNotFoundError, ValueError):
-        return []
-    notes = doc.get("notes") or []
+    from masterclass.engine.aligned_notes import load_aligned_notes
+    notes = load_aligned_notes(storage, manifest)
     rows: list[dict[str, Any]] = []
     NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     for n in notes:
-        if not isinstance(n, dict):
+        if not n.pitches_midi:
             continue
-        pitches = n.get("pitches_midi") or []
-        if not pitches:
-            continue
-        detected = int(pitches[0])
-        score_pitch = n.get("score_midi_pitch")
+        detected = int(n.pitches_midi[0])
+        score_pitch = n.score_midi_pitch
         cents_off_score = None
         if score_pitch is not None:
             # If detected and matched score pitch differ by a semitone we report
@@ -284,18 +277,19 @@ def _audio_truth_pitch_rows(storage: ObjectStorage, manifest: SessionManifest, l
             # WRONG-NOTE mismatches as clearly as in-tune-but-imprecise.
             cents_off_score = round((detected - int(score_pitch)) * 100.0, 1)
         det_name = f"{NAMES[detected % 12]}{detected // 12 - 1}"
+        duration = n.dwell_sec if n.dwell_sec else (n.expected_perf_duration or 0.0)
         rows.append({
-            "start_sec": round(float(n.get("performed_time_sec", n.get("perf_time", 0.0))), 3),
-            "duration_sec": round(float(n.get("dwell_sec", n.get("expected_perf_duration", 0.0))), 3),
+            "start_sec": round(float(n.performed_time_sec), 3),
+            "duration_sec": round(float(duration), 3),
             "detected_note": det_name,
             "detected_midi": detected,
             "score_note": f"{NAMES[int(score_pitch) % 12]}{int(score_pitch) // 12 - 1}" if score_pitch is not None else None,
             "cents_off_score": cents_off_score,
-            "measure": n.get("measure"),
-            "staff": n.get("staff_index"),
-            "matched": bool(n.get("matched")),
-            "confidence": n.get("confidence"),
-            "timing_offset_ms": n.get("timing_offset_ms"),
+            "measure": n.measure,
+            "staff": n.staff_index,
+            "matched": bool(n.matched),
+            "confidence": n.confidence,
+            "timing_offset_ms": n.timing_offset_ms,
         })
     rows.sort(key=lambda r: r["start_sec"])
     if limit is not None:
@@ -304,7 +298,7 @@ def _audio_truth_pitch_rows(storage: ObjectStorage, manifest: SessionManifest, l
 
 
 def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manifest: SessionManifest) -> SessionManifest:
-    analysis_key = manifest.artifacts.get("analysis/analysis.json")
+    analysis_key = ArtifactCatalog(manifest).analysis_json()
     if not analysis_key:
         raise ValueError("analysis artifact missing; run analyze first")
     analysis = storage.read_json(analysis_key)
@@ -328,12 +322,45 @@ def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manife
     # rows below are score-anchored: each row tells the teacher exactly what
     # note was played, what the score expected, and the deviation.
     at_rows = _audio_truth_pitch_rows(storage, manifest, limit=80)
+    # Scope rows to the player's played range: rows whose ``measure`` falls
+    # outside the [first..last] window are matcher noise (snapped to a
+    # nearby score event that the player never actually approached) and
+    # they routinely mislead the teacher agent into commenting on measures
+    # the user never played.
+    from masterclass.core.played_range import derive_played_range
+    played_range = derive_played_range(manifest, None)
     if at_rows:
+        in_range_rows: list[dict[str, Any]] = []
+        out_of_range = 0
+        for r in at_rows:
+            m = r.get("measure")
+            if m is None or played_range.contains(m):
+                in_range_rows.append(r)
+            else:
+                out_of_range += 1
+        at_rows = in_range_rows
+        header = (
+            f"## Audio-truth notes (first {len(at_rows)}, score-matched, "
+            f"played range: m.{played_range.first_measure}-{played_range.last_measure})"
+        )
+        played_note = (
+            f"All rows below are scoped to the played range "
+            f"m.{played_range.first_measure}-{played_range.last_measure} "
+            f"(source: {played_range.source}). "
+        )
+        if out_of_range:
+            played_note += (
+                f"Dropped {out_of_range} row(s) whose detected measure fell outside this range. "
+            )
         lines.extend([
             "",
-            f"## Audio-truth notes (first {len(at_rows)}, score-matched)",
+            header,
             "",
-            "Each row is one detected note matched against the reference score. `cents_off_score` is the literal MIDI-semitone difference between the detected pitch and the score pitch (so +100 = a full semitone sharp, often a wrong-note mistake; +35 = a sharp intonation reading; ±10 ≈ in tune). `timing_offset_ms` is detected-onset minus score-time (positive = late).",
+            played_note
+            + "Each row is one detected note matched against the reference score. "
+            + "`cents_off_score` is the literal MIDI-semitone difference between the detected pitch and the score pitch "
+            + "(so +100 = a full semitone sharp, often a wrong-note mistake; +35 = a sharp intonation reading; ±10 ≈ in tune). "
+            + "`timing_offset_ms` is detected-onset minus score-time (positive = late).",
             "",
         ])
         for r in at_rows:

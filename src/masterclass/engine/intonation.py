@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.models import SessionManifest
 from masterclass.core.sessions import SessionStore
 from masterclass.storage.base import ObjectStorage
@@ -54,13 +55,14 @@ def analyze_intonation(
     """Analyze score-aware intonation from HMM-aligned note timestamps."""
 
     config = config or IntonationConfig()
-    audio_key = manifest.artifacts.get("artifacts/audio.wav")
+    catalog = ArtifactCatalog(manifest)
+    audio_key = catalog.audio_wav()
     if not audio_key:
         raise ValueError("manifest is missing artifacts/audio.wav; run ingestion first")
 
-    from masterclass.engine.aligned_notes import load_aligned_notes, load_aligned_notes_source
-    notes_key, aligned_notes = load_aligned_notes_source(storage, manifest)
-    aligned_notes = list(aligned_notes)
+    from masterclass.engine.aligned_notes import load_aligned_notes_source
+    notes_key, raw_notes = load_aligned_notes_source(storage, manifest)
+    aligned_notes = [n.to_dict() for n in raw_notes]
     if not aligned_notes:
         raise RuntimeError("no aligned notes available for intonation analysis (audio_truth pipeline must run first)")
 
@@ -163,11 +165,12 @@ def intonation_from_wav_file(
                 presence_energy_ratio=config.presence_energy_ratio,
                 harmonic_energy_ratio=config.harmonic_energy_ratio,
             )
+            score_t = aligned.get("score_time_sec")
             row = {
                 "aligned_note_index": int(chord_index),
                 "state_idx": aligned.get("state_idx"),
-                "score_time_sec": _round_or_none(aligned.get("score_time_in_movement")),
-                "score_time_local": _round_or_none(aligned.get("score_time_local")),
+                "score_time_sec": _round_or_none(score_t),
+                "score_time_local": _round_or_none(score_t),
                 "expected_pitch_midi": int(pitch),
                 "expected_note": str(name),
                 "note_name": str(name),

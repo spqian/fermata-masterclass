@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.models import SessionManifest
 from masterclass.core.sessions import SessionStore
 from masterclass.storage.base import ObjectStorage
@@ -58,6 +59,7 @@ def analyze_rhythm(
 
     del store
     config = config or RhythmConfig()
+    _catalog = ArtifactCatalog(manifest)
 
     # Read everything we need through the unified aligned-notes accessor
     # (audio_truth_matched_notes.json preferred, with hmm shim as fallback)
@@ -68,7 +70,7 @@ def analyze_rhythm(
     # will silently fall back to its first_visited_pitches-empty default.
     from masterclass.engine.aligned_notes import load_aligned_notes, load_measure_starts
     raw_aligned = load_aligned_notes(storage, manifest)
-    aligned_notes = _normalized_notes(raw_aligned)
+    aligned_notes = _normalized_notes([n.to_dict() for n in raw_aligned])
     if len(aligned_notes) < 2:
         raise RuntimeError("no aligned notes available for rhythm analysis (audio_truth pipeline must run first)")
 
@@ -151,9 +153,9 @@ def analyze_rhythm(
         "repertoire": manifest.repertoire,
         "movement": manifest.movement,
         "method": "score_aware_polyphonic_rhythm_hmm",
-        "source_alignment": manifest.artifacts.get("analysis/audio_truth_matched_notes.json"),
-        "source_notes": manifest.artifacts.get("analysis/audio_truth_matched_notes.json") or manifest.artifacts.get("analysis/audio_truth_notes.json"),
-        "source_rich_onsets": manifest.artifacts.get("analysis/rich_onsets.json") if rich_onsets else None,
+        "source_alignment": _catalog.audio_truth_matched(),
+        "source_notes": _catalog.audio_truth_matched() or _catalog.audio_truth_raw(),
+        "source_rich_onsets": _catalog.rich_onsets() if rich_onsets else None,
         "music_start_sec": round(float(music_start_sec), 3),
         "midi_quarter_bpm_render": round(float(config.midi_quarter_bpm), 2),
         "played_measures": (alignment.get("summary") or {}).get("played_measures")
@@ -265,7 +267,7 @@ def _normalized_measures(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _load_rich_onsets(storage: ObjectStorage, manifest: SessionManifest) -> list[dict[str, Any]]:
-    key = manifest.artifacts.get("analysis/rich_onsets.json")
+    key = ArtifactCatalog(manifest).rich_onsets()
     if not key or not storage.exists(key):
         return []
     doc = storage.read_json(key)
