@@ -18,6 +18,13 @@ class PianoScoreFollowerConfig:
     band_rad: float = 0.18
     loud_thresh_db: float = -32.0
     max_note_alignments: int = 3000
+    # When True, skip the bar-locked rhythm path even if polyphonic_rhythm.json
+    # exists, and always run real chroma DTW against the reference MIDI. The
+    # bar-locked path is a faster approximation that snaps notes to score-grid
+    # times under each bar; chroma DTW actually time-warps the score against
+    # the audio chroma. The bar-locked path is the default for backward-compat
+    # with the original pipeline.
+    prefer_chroma_dtw: bool = False
 
 
 @dataclass
@@ -80,7 +87,8 @@ def follow_piano_score(
     rhythm_key = manifest.artifacts.get("analysis/polyphonic_rhythm.json")
     bar_time_map = None
     method = "piano_chroma_dtw_score_follower"
-    if rhythm_key and storage.exists(rhythm_key):
+    use_bar_locked = bool(rhythm_key and storage.exists(rhythm_key)) and not config.prefer_chroma_dtw
+    if use_bar_locked:
         bar_time_map = _rhythm_bar_starts(storage.read_json(rhythm_key), fm, lm)
         method = "piano_bar_locked_rhythm_follower"
         ref = np.zeros((12, 1), dtype=np.float32)

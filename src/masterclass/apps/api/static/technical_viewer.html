@@ -113,11 +113,24 @@
     .hmm-bar { position:absolute; background:rgba(142,197,133,.85); height:2px;
       box-shadow:0 0 4px rgba(142,197,133,.9); border-radius:1px; }
     .hmm-bar.chord { background:rgba(164,184,214,.75); box-shadow:0 0 3px rgba(164,184,214,.8); }
+    /* Per-staff coloring for the score-matched view. Staff 0 (typically the
+       treble / right hand for piano, or the single staff for violin) is
+       green; staff 1 (bass / left hand) is amber; deeper staff indices fall
+       back to a neutral grey. Unmatched basic-pitch notes get a low-opacity
+       dashed look so the user can see them but knows they have no score
+       counterpart. */
+    .hmm-bar.staff-0 { background:rgba(142,197,133,.9); box-shadow:0 0 5px rgba(142,197,133,.9); }
+    .hmm-bar.staff-1 { background:rgba(231,180,99,.9);  box-shadow:0 0 5px rgba(231,180,99,.9); }
+    .hmm-bar.staff-2 { background:rgba(164,184,214,.85); box-shadow:0 0 5px rgba(164,184,214,.85); }
+    .hmm-bar.unmatched { background:rgba(180,180,180,.45); box-shadow:none; border:1px dashed rgba(180,180,180,.55); height:1px; }
     .overlay-toggle { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-soft); margin-left:auto; cursor:pointer; user-select:none; }
     .overlay-toggle input { accent-color:var(--gold); }
     .legend-dot { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; border-radius:2px; }
     .legend-dot.melody { background:rgba(142,197,133,.85); }
     .legend-dot.chord { background:rgba(164,184,214,.75); }
+    .legend-dot.staff-0 { background:rgba(142,197,133,.9); }
+    .legend-dot.staff-1 { background:rgba(231,180,99,.9); }
+    .legend-dot.unmatched { background:rgba(180,180,180,.5); }
     .placeholder { color:var(--ink-mute); font-style:italic; padding:14px 0; }
     .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:12px; color:var(--ink-soft); }
     .toolbar input[type=number] { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.1); color:var(--ink); padding:5px 8px; border-radius:3px; width:80px; font-family:"JetBrains Mono",monospace; }
@@ -199,6 +212,7 @@
                   <option value="hmm">HMM (monophonic + fallback)</option>
                   <option value="dtw">DTW (chroma · polyphonic)</option>
                   <option value="basic_pitch">basic-pitch (audio-only)</option>
+                  <option value="basic_pitch_matched">basic-pitch + score-match (RH/LH)</option>
                 </select>
               </label>
               <span class="specgram-status" id="spec-status"></span>
@@ -637,9 +651,6 @@
     if (rect.width === 0) return;
     overlay.style.width = `${rect.width}px`;
     overlay.style.height = `${rect.height}px`;
-    // Plot bbox in image-natural pixels -> CSS pixels via the same scale the
-    // hover tooltip uses, so overlay/hover/playhead all share one source of
-    // truth (the server-measured bbox).
     const scaleX = rect.width / lastSpec.imgW;
     const scaleY = rect.height / lastSpec.imgH;
     const plotLeft = lastSpec.plotL * scaleX;
@@ -651,22 +662,45 @@
     const windowSec = end - start;
     for (const n of win) {
       const t0 = n.performed_time_sec ?? n.perf_time ?? 0;
-      const dur = Math.max(0.04, n.expected_perf_duration ?? 0.15);
+      const dur = Math.max(0.04, n.expected_perf_duration ?? n.dwell_sec ?? 0.15);
       const t1 = Math.min(t0 + dur, end);
       const x0 = plotLeft + ((t0 - start) / windowSec) * plotW;
       const x1 = plotLeft + ((t1 - start) / windowSec) * plotW;
       const pitches = Array.isArray(n.pitches_midi) ? n.pitches_midi : [];
       if (!pitches.length) continue;
       const topMidi = Math.max(...pitches);
+      // Per-bar classification:
+      //   - If the note has a staff_index (matched basic-pitch + score), color
+      //     by staff: staff 0 = green (treble/RH), staff 1 = amber (bass/LH).
+      //   - If basic-pitch detected the note but no score match, render as a
+      //     low-opacity dashed bar so the user can see "audio said there was
+      //     a note here but the score doesn't have one".
+      //   - Otherwise fall back to the original melody-vs-chord coloring.
+      const hasStaff = (n.staff_index !== undefined && n.staff_index !== null);
+      const matched = n.matched !== false; // unmatched is explicit false
       for (const midi of pitches) {
         if (midi < lastSpec.midiMin || midi > lastSpec.midiMax) continue;
         const y = plotTop + ((lastSpec.midiMax - midi) / (lastSpec.midiMax - lastSpec.midiMin)) * plotH;
         const bar = document.createElement("div");
-        bar.className = "hmm-bar" + (midi === topMidi ? "" : " chord");
+        let cls = "hmm-bar";
+        if (hasStaff) {
+          cls += ` staff-${Math.min(n.staff_index, 2)}`;
+        } else if (matched === false) {
+          cls += " unmatched";
+        } else if (midi !== topMidi) {
+          cls += " chord";
+        }
+        bar.className = cls;
         bar.style.left = `${x0}px`;
         bar.style.top = `${y}px`;
         bar.style.width = `${Math.max(2, x1 - x0)}px`;
-        bar.title = `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}  ·  ${t0.toFixed(3)}s  ·  m.${n.measure ?? "?"}  ·  conf=${n.confidence || "?"}`;
+        const noteName = `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
+        const staffLabel = hasStaff ? `staff=${n.staff_index} (${n.track_name || "?"})` :
+                           (matched === false ? "no score match" : "");
+        const lagLabel = (n.timing_offset_ms !== undefined && n.timing_offset_ms !== null)
+                          ? `  ·  lag=${n.timing_offset_ms > 0 ? "+" : ""}${n.timing_offset_ms}ms`
+                          : "";
+        bar.title = `${noteName}  ·  ${t0.toFixed(3)}s  ·  m.${n.measure ?? "?"}  ·  conf=${n.confidence || "?"}  ${staffLabel}${lagLabel}`;
         overlay.appendChild(bar);
       }
     }
