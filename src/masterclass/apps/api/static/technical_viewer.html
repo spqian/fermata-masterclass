@@ -104,25 +104,25 @@
     .spec-playhead::after { content:""; position:absolute; left:-4px; top:-4px;
       width:10px; height:10px; border-radius:50%; background:#e07a5f;
       box-shadow:0 0 6px rgba(224,122,95,.85); }
-    /* HMM reference-pitch overlay: thin horizontal bars at the score-expected
+    /* Aligned-notes reference-pitch overlay: thin horizontal bars at the score-expected
        fundamental, sitting on top of the spectrogram so the user can see
        whether the brightness band aligns with where the score says the note
        should be. Slight yellow/cyan glow makes them visible over magma. */
-    .hmm-overlay { position:absolute; pointer-events:none; left:0; top:0; right:0; bottom:0; display:none; z-index:23; }
-    .hmm-overlay.on { display:block; }
-    .hmm-bar { position:absolute; background:rgba(142,197,133,.85); height:2px;
+    .align-overlay { position:absolute; pointer-events:none; left:0; top:0; right:0; bottom:0; display:none; z-index:23; }
+    .align-overlay.on { display:block; }
+    .align-bar { position:absolute; background:rgba(142,197,133,.85); height:2px;
       box-shadow:0 0 4px rgba(142,197,133,.9); border-radius:1px; }
-    .hmm-bar.chord { background:rgba(164,184,214,.75); box-shadow:0 0 3px rgba(164,184,214,.8); }
+    .align-bar.chord { background:rgba(164,184,214,.75); box-shadow:0 0 3px rgba(164,184,214,.8); }
     /* Per-staff coloring for the score-matched view. Staff 0 (typically the
        treble / right hand for piano, or the single staff for violin) is
        green; staff 1 (bass / left hand) is amber; deeper staff indices fall
        back to a neutral grey. Unmatched basic-pitch notes get a low-opacity
        dashed look so the user can see them but knows they have no score
        counterpart. */
-    .hmm-bar.staff-0 { background:rgba(142,197,133,.9); box-shadow:0 0 5px rgba(142,197,133,.9); }
-    .hmm-bar.staff-1 { background:rgba(231,180,99,.9);  box-shadow:0 0 5px rgba(231,180,99,.9); }
-    .hmm-bar.staff-2 { background:rgba(164,184,214,.85); box-shadow:0 0 5px rgba(164,184,214,.85); }
-    .hmm-bar.unmatched { background:rgba(180,180,180,.45); box-shadow:none; border:1px dashed rgba(180,180,180,.55); height:1px; }
+    .align-bar.staff-0 { background:rgba(142,197,133,.9); box-shadow:0 0 5px rgba(142,197,133,.9); }
+    .align-bar.staff-1 { background:rgba(231,180,99,.9);  box-shadow:0 0 5px rgba(231,180,99,.9); }
+    .align-bar.staff-2 { background:rgba(164,184,214,.85); box-shadow:0 0 5px rgba(164,184,214,.85); }
+    .align-bar.unmatched { background:rgba(180,180,180,.45); box-shadow:none; border:1px dashed rgba(180,180,180,.55); height:1px; }
     .overlay-toggle { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-soft); margin-left:auto; cursor:pointer; user-select:none; }
     .overlay-toggle input { accent-color:var(--gold); }
     .legend-dot { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; border-radius:2px; }
@@ -201,8 +201,8 @@
               <label>end <input type="number" id="spec-end" step="0.1" min="0.25" value="5"></label>
               <button id="spec-refresh">Render</button>
               <button class="ghost" id="spec-fit-to-comment">Fit to comment</button>
-              <label class="overlay-toggle" title="Show score-expected pitches from the HMM alignment as thin horizontal bars">
-                <input type="checkbox" id="hmm-overlay-toggle" checked>
+              <label class="overlay-toggle" title="Show score-expected pitches from the aligned-notes (audio-truth) feed as thin horizontal bars">
+                <input type="checkbox" id="align-overlay-toggle" checked>
                 <span><span class="legend-dot melody"></span>melody &nbsp;<span class="legend-dot chord"></span>chord</span>
                 &nbsp;overlay
               </label>
@@ -216,7 +216,7 @@
                   <option value="basic_pitch_matched">basic-pitch + score-match</option>
                   <option value="basic_pitch">basic-pitch (raw)</option>
                   <option value="dtw">DTW (chroma · score-anchored)</option>
-                  <option value="hmm">HMM (legacy, broken)</option>
+                  <option value="hmm">aligned-notes legacy shim (deprecated)</option>
                 </select>
                 <button class="ghost" id="rebuild-audio-truth" style="margin-left:8px; padding:5px 9px; font-size:11px;" title="Re-run audio-truth transcription + score matching for this lesson (PTI for piano, basic-pitch otherwise)">↻ Rebuild</button>
               </label>
@@ -224,7 +224,7 @@
             </div>
             <div class="spec-wrap">
               <img class="spec-img" id="spec-img" alt="spectrogram (select a comment or press Render)">
-              <div class="hmm-overlay on" id="hmm-overlay"></div>
+              <div class="align-overlay on" id="align-overlay"></div>
               <div class="spec-crosshair h" id="spec-hline"></div>
               <div class="spec-crosshair v" id="spec-vline"></div>
               <div class="spec-playhead" id="spec-playhead"></div>
@@ -233,14 +233,15 @@
           </div>
         </div>
 
-        <!-- 3. HMM aligned notes in window -->
-        <div class="panel-card" id="panel-hmm">
-          <div class="panel-head" data-toggle="panel-hmm">
-            <h2>HMM-aligned notes in window</h2>
-            <span class="badge" id="hmm-badge">—</span>
+        <!-- 3. Aligned notes (audio-truth) in window -->
+        <div class="panel-card" id="panel-aligned">
+          <div class="panel-head" data-toggle="panel-aligned">
+            <h2>Aligned notes (audio-truth) in window</h2>
+            <span class="badge" id="aligned-badge">—</span>
+            <span class="badge" id="aligned-scope">—</span>
             <span class="chev"></span>
           </div>
-          <div class="panel-body" id="hmm-body">
+          <div class="panel-body" id="aligned-body">
             <div class="placeholder">Select a comment to see the aligned reference notes around it.</div>
           </div>
         </div>
@@ -379,12 +380,12 @@
   // The server measures matplotlib's true axes pixel bbox after rendering
   // and emits it as X-Spec-Plot-Bbox + X-Spec-Image-Size + X-Spec-Midi-Range
   // headers, which renderSpectrogram() stores on lastSpec. All overlays
-  // (hover tooltip, playhead, HMM bars) read from lastSpec so they share
+  // (hover tooltip, playhead, aligned-note bars) read from lastSpec so they share
   // one source of truth and stay aligned with what matplotlib actually
   // drew, regardless of font, dpi, or label width.
   let lastSpec = null;  // {startSec,endSec, imgW,imgH, plotL,plotT,plotR,plotB, midiMin,midiMax}
   let comments = [];
-  let hmmNotes = [];
+  let alignedRows = [];
   let currentComment = null;
 
   function midiToNoteName(midiFloat) {
@@ -504,7 +505,7 @@
     document.getElementById("spec-start").value = start.toFixed(2);
     document.getElementById("spec-end").value = end.toFixed(2);
     renderSpectrogram(start, end);
-    renderHmmWindow(start, end);
+    renderAlignedWindow(start, end);
   }
 
   function renderFocusPanel(c) {
@@ -671,12 +672,12 @@
         };
         bindSpectrogramHover();
         renderPlayheadOnce();
-        if (currentComment && hmmNotes.length) {
-          const winNotes = hmmNotes.filter(n => {
+        if (currentComment && alignedRows.length) {
+          const winNotes = alignedRows.filter(n => {
             const t = n.performed_time_sec ?? n.perf_time ?? 0;
             return t >= tStart && t <= tEnd;
           });
-          renderHmmOverlay(winNotes, tStart, tEnd);
+          renderAlignedOverlay(winNotes, tStart, tEnd);
         }
       }, { once: true });
       status.textContent = `rendered ${tStart.toFixed(2)}s → ${tEnd.toFixed(2)}s — hover for note + freq`;
@@ -694,36 +695,41 @@
       alignedNotes = Array.isArray(data.notes) ? data.notes : [];
       alignedNotes._source = alignmentSource;
       alignedNotes._method = data.method || alignmentSource;
+      // The endpoint already filters the notes to the played-range; we
+      // also keep the bounds around so the UI can render a "scoped to
+      // m.X-Y" subtitle and gate any extra client-side filtering by it.
+      alignedNotes._playedRange = data.played_range || null;
+      alignedNotes._droppedOutOfRange = data.dropped_out_of_range || 0;
     } catch (e) {
       alignedNotes = [];
       alignedNotes._source = alignmentSource;
-      // Surface the missing-artifact case clearly in the HMM panel instead of
+      // Surface the missing-artifact case clearly in the aligned-notes panel instead of
       // silently showing an empty overlay.
-      const body = document.getElementById("hmm-body");
+      const body = document.getElementById("aligned-body");
       if (body) body.innerHTML = `<div class="placeholder">No <code>${escapeHtml(alignmentSource)}</code> alignment for this lesson: ${escapeHtml(e.message)}</div>`;
     }
   }
 
-  async function ensureHmmLoaded() {
-    // Backwards-compatible name: this used to load only the HMM, but now it
+  async function ensureAlignedLoaded() {
+    // Backwards-compatible name: this used to load only the legacy alignment, but now it
     // honours the user-selected alignment source. Kept the name so existing
-    // call sites in renderHmmWindow + the spectrogram image-load handler
+    // call sites in renderAlignedWindow + the spectrogram image-load handler
     // continue to work.
     await loadAlignedNotes();
-    hmmNotes = alignedNotes;
+    alignedRows = alignedNotes;
   }
 
-  // ---------- HMM overlay ----------
+  // ---------- Aligned-notes overlay ----------
   // For each score note that falls inside the rendered spectrogram window,
   // draw a thin horizontal bar at the expected pitch from t_start to
-  // t_start + expected_perf_duration. The single highest pitch per HMM state
+  // t_start + expected_perf_duration. The single highest pitch per alignment state
   // is the "melody" (drawn green); the rest are chord/accompaniment tones
   // (drawn blue). The bars sit ON TOP of the magma spectrogram so the user
   // can see at a glance whether the brightness band lines up with where the
   // score says the note should be -- the fastest way to validate or
   // falsify a teacher claim like "the C is sharp".
-  function renderHmmOverlay(win, start, end) {
-    const overlay = document.getElementById("hmm-overlay");
+  function renderAlignedOverlay(win, start, end) {
+    const overlay = document.getElementById("align-overlay");
     const img = document.getElementById("spec-img");
     if (!overlay || !img || !lastSpec) return;
     overlay.innerHTML = "";
@@ -763,7 +769,7 @@
         if (midi < lastSpec.midiMin || midi > lastSpec.midiMax) continue;
         const y = plotTop + ((lastSpec.midiMax - midi) / (lastSpec.midiMax - lastSpec.midiMin)) * plotH;
         const bar = document.createElement("div");
-        let cls = "hmm-bar";
+        let cls = "align-bar";
         if (hasStaff) {
           cls += ` staff-${Math.min(n.staff_index, 2)}`;
         } else if (matched === false) {
@@ -787,16 +793,38 @@
     }
   }
 
-  async function renderHmmWindow(start, end) {
-    await ensureHmmLoaded();
-    const win = hmmNotes.filter(n => {
+  async function renderAlignedWindow(start, end) {
+    await ensureAlignedLoaded();
+    // Belt-and-braces: drop any row whose measure falls outside the
+    // lesson's played range. The server already filters, but if an older
+    // payload sneaks through (e.g. cached or hand-edited) the UI must
+    // still respect the user's window so the "scoped to m.X-Y" subtitle
+    // never lies about what's on screen.
+    const pr = alignedNotes._playedRange;
+    const inRange = n => {
+      if (!pr) return true;
+      if (n.measure == null) return true;
+      const m = Number(n.measure);
+      return Number.isFinite(m) && m >= pr.first_measure && m <= pr.last_measure;
+    };
+    const scopedRows = alignedRows.filter(inRange);
+    const win = scopedRows.filter(n => {
       const t = n.performed_time_sec ?? n.perf_time ?? 0;
       return t >= start && t <= end;
     });
-    const body = document.getElementById("hmm-body");
+    const body = document.getElementById("aligned-body");
     const method = alignedNotes._method || alignmentSource;
-    document.getElementById("hmm-badge").textContent = `${win.length} of ${hmmNotes.length} notes in window · ${method}`;
-    renderHmmOverlay(win, start, end);
+    document.getElementById("aligned-badge").textContent = `${win.length} of ${scopedRows.length} notes in window · ${method}`;
+    const scopeEl = document.getElementById("aligned-scope");
+    if (scopeEl) {
+      if (pr) {
+        const dropped = alignedNotes._droppedOutOfRange || 0;
+        scopeEl.textContent = `scoped to m.${pr.first_measure}-${pr.last_measure} played${dropped ? ` · dropped ${dropped} row(s) out of range` : ""}`;
+      } else {
+        scopeEl.textContent = "—";
+      }
+    }
+    renderAlignedOverlay(win, start, end);
     if (!win.length) { body.innerHTML = `<div class="placeholder">no aligned notes in this window</div>`; return; }
     const rows = win.map(n => {
       const pitches = Array.isArray(n.names) && n.names.length ? n.names.join("+")
@@ -873,7 +901,7 @@
     const e = parseFloat(document.getElementById("spec-end").value);
     if (isFinite(s) && isFinite(e) && e > s) {
       renderSpectrogram(s, e);
-      renderHmmWindow(s, e);
+      renderAlignedWindow(s, e);
     }
   });
   document.getElementById("spec-fit-to-comment").addEventListener("click", () => {
@@ -883,19 +911,19 @@
     document.getElementById("spec-start").value = start.toFixed(2);
     document.getElementById("spec-end").value = end.toFixed(2);
     renderSpectrogram(start, end);
-    renderHmmWindow(start, end);
+    renderAlignedWindow(start, end);
   });
-  document.getElementById("hmm-overlay-toggle").addEventListener("change", (ev) => {
-    document.getElementById("hmm-overlay").classList.toggle("on", ev.target.checked);
+  document.getElementById("align-overlay-toggle").addEventListener("change", (ev) => {
+    document.getElementById("align-overlay").classList.toggle("on", ev.target.checked);
   });
   document.getElementById("alignment-source").addEventListener("change", async (ev) => {
     alignmentSource = ev.target.value;
-    hmmNotes = [];
+    alignedRows = [];
     alignedNotes = [];
     if (currentComment) {
       const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
       const end = (currentComment.end ?? start + 3) + 0.5;
-      await renderHmmWindow(start, end);
+      await renderAlignedWindow(start, end);
     }
   });
   document.getElementById("rebuild-audio-truth").addEventListener("click", async () => {
@@ -910,11 +938,11 @@
       if (!r.ok) throw new Error(data.detail || `${r.status}`);
       status.textContent = `rebuilt: ${data.method} detected ${data.notes} notes, matched ${data.matched}`;
       // Force the overlay + table to refresh with the freshly-built data.
-      hmmNotes = []; alignedNotes = [];
+      alignedRows = []; alignedNotes = [];
       if (currentComment) {
         const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
         const end = (currentComment.end ?? start + 3) + 0.5;
-        await renderHmmWindow(start, end);
+        await renderAlignedWindow(start, end);
       }
     } catch (e) {
       status.textContent = `rebuild failed: ${e.message}`;

@@ -620,6 +620,12 @@ def run_audio_truth_pipeline(
     aligned_key = store.artifact_key(manifest.session, "analysis/hmm_aligned_notes.json")
     storage.write_json(aligned_key, aligned_doc)
     manifest.artifacts["analysis/hmm_aligned_notes.json"] = aligned_key
+    # Vocabulary-clean alias: write the same document under the new name so
+    # consumers can migrate off the ``hmm_`` prefix at their own pace. See
+    # ``aligned_notes._CANDIDATE_KEYS`` for the deprecation timeline.
+    aligned_alias_key = store.artifact_key(manifest.session, "analysis/aligned_notes.json")
+    storage.write_json(aligned_alias_key, aligned_doc)
+    manifest.artifacts["analysis/aligned_notes.json"] = aligned_alias_key
     align_key = store.artifact_key(manifest.session, "analysis/hmm_alignment.json")
     storage.write_json(align_key, alignment_doc)
     manifest.artifacts["analysis/hmm_alignment.json"] = align_key
