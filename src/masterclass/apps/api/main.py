@@ -1461,7 +1461,6 @@ def create_app():
         ctx: TenantContext = Depends(_pro_ctx),
     ) -> Response:
         manifest = store.load_by_id(ctx, session_id)
-        # Prefer the lower-rate 16k file for speed; fall back to full-quality.
         audio_key = manifest.artifacts.get("artifacts/audio_16k.wav") or manifest.artifacts.get("artifacts/audio.wav")
         if not audio_key:
             audio_key = store.artifact_key(manifest.session, "artifacts/audio_16k.wav")
@@ -1470,7 +1469,7 @@ def create_app():
                 if not storage.exists(audio_key):
                     raise HTTPException(status_code=404, detail="lesson has no decoded audio")
         try:
-            png = render_spectrogram_window(
+            png, meta = render_spectrogram_window(
                 storage=storage,
                 audio_key=audio_key,
                 start_sec=float(start),
@@ -1480,10 +1479,22 @@ def create_app():
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Headers let the frontend translate mouse pixel coords -> data coords
+        # without guessing matplotlib's layout. Exposed via Access-Control so
+        # any future cross-origin proxy can still read them.
+        plot_bbox = meta["plot_bbox_px"]
+        midi_range = meta["midi_range"]
         return Response(
             content=png,
             media_type="image/png",
-            headers={"Cache-Control": "private, max-age=3600"},
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "X-Spec-Plot-Bbox": f"{plot_bbox[0]:.2f},{plot_bbox[1]:.2f},{plot_bbox[2]:.2f},{plot_bbox[3]:.2f}",
+                "X-Spec-Image-Size": f"{meta['image_width']},{meta['image_height']}",
+                "X-Spec-Time-Range": f"{meta['time_range_sec'][0]:.6f},{meta['time_range_sec'][1]:.6f}",
+                "X-Spec-Midi-Range": f"{midi_range[0]:.4f},{midi_range[1]:.4f}",
+                "Access-Control-Expose-Headers": "X-Spec-Plot-Bbox,X-Spec-Image-Size,X-Spec-Time-Range,X-Spec-Midi-Range",
+            },
         )
 
     _WATCH_CLIP_RE = re.compile(r"^clip_\d+_\d+_h\d+\.mp4$")

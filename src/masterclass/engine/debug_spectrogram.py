@@ -50,7 +50,7 @@ PLOT_TOP_FRAC = 0.935
 
 def _cache_key(audio_key: str, start: float, end: float, width: int, height: int) -> str:
     digest = hashlib.sha1(
-        f"{audio_key}|{start:.3f}|{end:.3f}|{width}|{height}|cqt-v2-pinned".encode("utf-8")
+        f"{audio_key}|{start:.3f}|{end:.3f}|{width}|{height}|cqt-v3-measured".encode("utf-8")
     ).hexdigest()
     # Co-locate the cache under the lesson's analysis/ prefix so it travels
     # with the rest of the per-lesson artifacts.
@@ -66,10 +66,12 @@ def render_window(
     end_sec: float,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
-) -> bytes:
-    """Render a mel-spectrogram PNG for [start_sec, end_sec) of an audio asset.
+) -> tuple[bytes, dict]:
+    """Render a CQT spectrogram PNG for [start_sec, end_sec) of an audio asset.
 
-    Caches the result on the same storage backend so reloads are instant.
+    Returns ``(png_bytes, metadata)`` where ``metadata`` contains the true
+    pixel-coordinate bbox of the plot area inside the image plus the data
+    ranges, so the frontend can translate mouse / overlay coordinates exactly.
     """
     if end_sec <= start_sec:
         raise ValueError("end_sec must be greater than start_sec")
@@ -81,29 +83,22 @@ def render_window(
     width = int(min(max(width, 200), 2400))
     height = int(min(max(height, 120), 800))
 
-    cache = _cache_key(audio_key, start_sec, end_sec, width, height)
-    if storage.exists(cache):
-        return storage.read_bytes(cache)
+    cache_png = _cache_key(audio_key, start_sec, end_sec, width, height)
+    cache_meta = cache_png + ".json"
+    if storage.exists(cache_png) and storage.exists(cache_meta):
+        try:
+            meta = storage.read_json(cache_meta)
+            return storage.read_bytes(cache_png), meta
+        except (FileNotFoundError, ValueError, TypeError):
+            pass  # corrupt cache, fall through and regenerate
 
-    # librosa.load with offset+duration reads only the requested slice so we
-    # do not have to pull the whole multi-MB WAV into memory once libsndfile
-    # is seeking the file handle. Wrap bytes in BytesIO so libsndfile sees a
-    # file-like object regardless of storage backend. We upsample to 22050 Hz
-    # so the CQT's hop_length divides cleanly into the bin spacing librosa
-    # requires for the requested number of bins per octave.
     audio_bytes = storage.read_bytes(audio_key)
     y, sr = librosa.load(io.BytesIO(audio_bytes), sr=22050, mono=True, offset=start_sec, duration=window)
     if y.size == 0:
         raise ValueError("requested window is outside the audio length")
 
-    # Constant-Q transform: bins are exactly spaced by semitones (or fractions
-    # of a semitone via BINS_PER_OCTAVE), so the y-axis becomes a real piano
-    # keyboard rather than a perceptual mel scale. Quarter-tone resolution
-    # lets the user see intonation drift (the "is the C actually sharp?"
-    # question) by reading two bins of brightness instead of one.
     fmin = librosa.note_to_hz(FMIN_NOTE)
-    # hop_length must be a multiple of 2**(n_octaves - 1) for CQT.
-    hop_length = 2 ** (N_OCTAVES - 1) * 2  # 128 for 7 octaves -> stable & high time-res
+    hop_length = 2 ** (N_OCTAVES - 1) * 2
     cqt = librosa.cqt(
         y=y, sr=sr,
         fmin=fmin,
@@ -120,21 +115,16 @@ def render_window(
         sr=sr,
         hop_length=hop_length,
         x_axis="time",
-        y_axis="cqt_note",         # <- this is the magic: tick labels are note names
+        y_axis="cqt_note",
         fmin=fmin,
         bins_per_octave=BINS_PER_OCTAVE,
         cmap="magma",
         ax=ax,
     )
-    # Shift the x-axis so the displayed times match the lesson's wall-clock,
-    # not the slice-local offset starting at zero. FuncFormatter avoids the
-    # set_xticklabels warning matplotlib emits when ticks aren't pinned.
     ax.xaxis.set_major_formatter(FuncFormatter(lambda t, _pos: f"{t + start_sec:.2f}"))
     ax.set_xlabel("time (s)", color="#c5c0b3")
     ax.set_ylabel("pitch (note name)", color="#c5c0b3")
     ax.tick_params(colors="#7a7669")
-    # Highlight C-notes with subtle horizontal lines so the eye can locate
-    # octaves at a glance, the same way piano keys mark them visually.
     for octave in range(1, N_OCTAVES + 1):
         c_hz = librosa.note_to_hz(f"C{octave}")
         if fmin <= c_hz <= librosa.note_to_hz(f"C{N_OCTAVES + 1}"):
@@ -146,9 +136,6 @@ def render_window(
         color="#c9a96a",
         fontsize=10,
     )
-    # Pin the plot area to fixed fractions of the figure so the frontend can
-    # translate mouse coordinates into (time, frequency) for the hover tooltip
-    # without round-tripping to the server.
     fig.subplots_adjust(
         left=PLOT_LEFT_FRAC,
         right=PLOT_RIGHT_FRAC,
@@ -156,13 +143,41 @@ def render_window(
         top=PLOT_TOP_FRAC,
     )
 
+    # IMPORTANT: force a draw before measuring axes bbox; otherwise the bbox
+    # may reflect requested rather than actual layout (esp. for tick labels).
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    ax_bbox_display = ax.get_window_extent(renderer=renderer)
+    # Display coords have origin at bottom-left; convert to top-left origin
+    # (the natural coord system for an HTML img).
+    plot_left = float(ax_bbox_display.x0)
+    plot_right = float(ax_bbox_display.x1)
+    plot_bottom = float(height - ax_bbox_display.y0)
+    plot_top = float(height - ax_bbox_display.y1)
+
+    # Pitch range: the CQT y-axis runs from fmin (bin 0) at the bottom to
+    # fmin * 2**(N_BINS / BINS_PER_OCTAVE) at the top of the topmost bin.
+    midi_min = float(librosa.hz_to_midi(fmin))
+    midi_max = midi_min + float(N_BINS) / float(BINS_PER_OCTAVE // 12)  # 12 semitones/octave conversion
+
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
     plt.close(fig)
     png = buf.getvalue()
 
+    meta = {
+        "image_width": width,
+        "image_height": height,
+        "plot_bbox_px": [plot_left, plot_top, plot_right, plot_bottom],  # x0,y0,x1,y1 top-left origin
+        "time_range_sec": [float(start_sec), float(end_sec)],
+        "midi_range": [midi_min, midi_max],
+        "bins_per_octave": BINS_PER_OCTAVE,
+        "schema_version": 1,
+    }
+
     try:
-        storage.write_bytes(cache, png, content_type="image/png")
+        storage.write_bytes(cache_png, png, content_type="image/png")
+        storage.write_json(cache_meta, meta)
     except Exception:
-        _LOG.warning("failed to cache spectrogram at %s", cache, exc_info=True)
-    return png
+        _LOG.warning("failed to cache spectrogram at %s", cache_png, exc_info=True)
+    return png, meta

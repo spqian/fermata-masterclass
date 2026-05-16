@@ -273,15 +273,13 @@
   }
 
   // ---------- spectrogram hover ----------
-  // These MUST stay in sync with the constants in engine/debug_spectrogram.py:
-  //   PLOT_LEFT_FRAC, PLOT_RIGHT_FRAC, PLOT_BOTTOM_FRAC, PLOT_TOP_FRAC,
-  //   FMIN_MIDI (24 = C1), FMAX_MIDI (108 = C8).
-  // The y-axis of the CQT is log-frequency (linear in MIDI semitones), so the
-  // pixel-to-MIDI mapping is a straight line; cents-off-the-nearest-semitone
-  // is just the fractional part times 100.
-  const SPEC_PLOT = { left: 0.060, right: 0.992, bottom: 0.115, top: 0.935 };
-  const SPEC_MIDI = { min: 24, max: 108 };
-  let lastSpec = null;  // { startSec, endSec, naturalW, naturalH }
+  // The server measures matplotlib's true axes pixel bbox after rendering
+  // and emits it as X-Spec-Plot-Bbox + X-Spec-Image-Size + X-Spec-Midi-Range
+  // headers, which renderSpectrogram() stores on lastSpec. All overlays
+  // (hover tooltip, playhead, HMM bars) read from lastSpec so they share
+  // one source of truth and stay aligned with what matplotlib actually
+  // drew, regardless of font, dpi, or label width.
+  let lastSpec = null;  // {startSec,endSec, imgW,imgH, plotL,plotT,plotR,plotB, midiMin,midiMax}
   let comments = [];
   let hmmNotes = [];
   let currentComment = null;
@@ -312,23 +310,25 @@
     img.addEventListener("mousemove", (ev) => {
       if (!lastSpec) return;
       const rect = img.getBoundingClientRect();
-      const xPx = ev.clientX - rect.left;   // pixels within the displayed (CSS-scaled) image
-      const yPx = ev.clientY - rect.top;
-      const w = rect.width, h = rect.height;
-      // The pinned plot area lives at these CSS-pixel positions inside the img.
-      const plotLeft = w * SPEC_PLOT.left;
-      const plotRight = w * SPEC_PLOT.right;
-      const plotTop = h * (1 - SPEC_PLOT.top);
-      const plotBottom = h * (1 - SPEC_PLOT.bottom);
-      if (xPx < plotLeft || xPx > plotRight || yPx < plotTop || yPx > plotBottom) {
+      const cssX = ev.clientX - rect.left;
+      const cssY = ev.clientY - rect.top;
+      // The server's plot bbox is in image-NATURAL px (the matplotlib output
+      // size). Convert the mouse cursor's CSS-px position to natural px so we
+      // can compare against the bbox.
+      const scaleX = lastSpec.imgW / rect.width;
+      const scaleY = lastSpec.imgH / rect.height;
+      const xPx = cssX * scaleX;
+      const yPx = cssY * scaleY;
+      if (xPx < lastSpec.plotL || xPx > lastSpec.plotR ||
+          yPx < lastSpec.plotT || yPx > lastSpec.plotB) {
         show(false);
         return;
       }
       show(true);
-      const xFrac = (xPx - plotLeft) / (plotRight - plotLeft);
-      const yFrac = (yPx - plotTop) / (plotBottom - plotTop);
+      const xFrac = (xPx - lastSpec.plotL) / (lastSpec.plotR - lastSpec.plotL);
+      const yFrac = (yPx - lastSpec.plotT) / (lastSpec.plotB - lastSpec.plotT);
       const tSec = lastSpec.startSec + xFrac * (lastSpec.endSec - lastSpec.startSec);
-      const midi = SPEC_MIDI.max - yFrac * (SPEC_MIDI.max - SPEC_MIDI.min);
+      const midi = lastSpec.midiMax - yFrac * (lastSpec.midiMax - lastSpec.midiMin);
       const hz = midiToHz(midi);
       const note = midiToNoteName(midi);
       let centsLabel, centsClass;
@@ -341,12 +341,10 @@
         `<span class="label">freq</span> <span class="val">${hz.toFixed(1)} Hz</span><br>` +
         `<span class="label">time</span> <span class="val">${tSec.toFixed(3)} s</span><br>` +
         `<span class="label">midi</span> <span class="val">${midi.toFixed(2)}</span>`;
-      // Position tooltip just above the cursor; clamp so it stays inside the panel.
-      let tipX = xPx, tipY = yPx;
-      tip.style.left = `${tipX}px`;
-      tip.style.top = `${tipY}px`;
-      hline.style.top = `${yPx}px`;
-      vline.style.left = `${xPx}px`;
+      tip.style.left = `${cssX}px`;
+      tip.style.top = `${cssY}px`;
+      hline.style.top = `${cssY}px`;
+      vline.style.left = `${cssX}px`;
     });
   }
 
@@ -509,11 +507,13 @@
       playhead.style.display = "none";
       return;
     }
-    const w = rect.width, h = rect.height;
-    const plotLeft = w * SPEC_PLOT.left;
-    const plotRight = w * SPEC_PLOT.right;
-    const plotTop = h * (1 - SPEC_PLOT.top);
-    const plotBottom = h * (1 - SPEC_PLOT.bottom);
+    // Convert plot bbox from natural-image pixels to displayed (CSS) pixels.
+    const scaleX = rect.width / lastSpec.imgW;
+    const scaleY = rect.height / lastSpec.imgH;
+    const plotLeft = lastSpec.plotL * scaleX;
+    const plotRight = lastSpec.plotR * scaleX;
+    const plotTop = lastSpec.plotT * scaleY;
+    const plotBottom = lastSpec.plotB * scaleY;
     const xFrac = (t - lastSpec.startSec) / (lastSpec.endSec - lastSpec.startSec);
     const x = plotLeft + xFrac * (plotRight - plotLeft);
     playhead.style.display = "block";
@@ -543,30 +543,40 @@
     status.textContent = `rendering ${(end - start).toFixed(2)}s window…`;
     const url = `/lessons/${SESSION_ID}/debug/spectrogram?start=${start.toFixed(3)}&end=${end.toFixed(3)}&w=1100&h=540`;
     try {
-      const blob = await api(url);
+      // Use raw fetch here (not api()) so we can read the X-Spec-* headers
+      // the server emits with the true plot bbox + midi range.
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`${url} → ${r.status}`);
+      const bboxHdr = r.headers.get("X-Spec-Plot-Bbox") || "";
+      const sizeHdr = r.headers.get("X-Spec-Image-Size") || "";
+      const midiHdr = r.headers.get("X-Spec-Midi-Range") || "";
+      const timeHdr = r.headers.get("X-Spec-Time-Range") || "";
+      const [plotL, plotT, plotR, plotB] = bboxHdr.split(",").map(parseFloat);
+      const [imgW, imgH] = sizeHdr.split(",").map(parseFloat);
+      const [midiMin, midiMax] = midiHdr.split(",").map(parseFloat);
+      const [tStart, tEnd] = (timeHdr ? timeHdr.split(",").map(parseFloat) : [start, end]);
+      const blob = await r.blob();
       const old = img.src;
       img.src = URL.createObjectURL(blob);
       if (old.startsWith("blob:")) URL.revokeObjectURL(old);
-      // Remember the time range so the mousemove handler can translate
-      // pixel coordinates -> data coordinates without re-fetching.
       img.addEventListener("load", () => {
-        lastSpec = { startSec: start, endSec: end, naturalW: img.naturalWidth, naturalH: img.naturalHeight };
+        lastSpec = {
+          startSec: tStart, endSec: tEnd,
+          imgW, imgH,
+          plotL, plotT, plotR, plotB,
+          midiMin, midiMax,
+        };
         bindSpectrogramHover();
-        // Spectrogram window changed -> reposition the playhead (or hide it
-        // if the audio's current time is outside the new window).
         renderPlayheadOnce();
-        // And re-draw the HMM overlay on the new window. The HMM data is
-        // already loaded if the panel has been visited; if not, this is a
-        // no-op until the next focusComment call.
         if (currentComment && hmmNotes.length) {
           const winNotes = hmmNotes.filter(n => {
             const t = n.performed_time_sec ?? n.perf_time ?? 0;
-            return t >= start && t <= end;
+            return t >= tStart && t <= tEnd;
           });
-          renderHmmOverlay(winNotes, start, end);
+          renderHmmOverlay(winNotes, tStart, tEnd);
         }
       }, { once: true });
-      status.textContent = `rendered ${start.toFixed(2)}s → ${end.toFixed(2)}s — hover for note + freq`;
+      status.textContent = `rendered ${tStart.toFixed(2)}s → ${tEnd.toFixed(2)}s — hover for note + freq`;
     } catch (e) {
       status.textContent = `render failed: ${e.message}`;
     }
@@ -594,35 +604,37 @@
   function renderHmmOverlay(win, start, end) {
     const overlay = document.getElementById("hmm-overlay");
     const img = document.getElementById("spec-img");
-    if (!overlay || !img) return;
+    if (!overlay || !img || !lastSpec) return;
     overlay.innerHTML = "";
     if (!win || !win.length) return;
-    // Match the overlay <div> to the rendered image size so absolute children
-    // can use pixel offsets that line up with the spectrogram's plot area.
     const rect = img.getBoundingClientRect();
     if (rect.width === 0) return;
     overlay.style.width = `${rect.width}px`;
     overlay.style.height = `${rect.height}px`;
-    const w = rect.width, h = rect.height;
-    const plotLeft = w * SPEC_PLOT.left;
-    const plotRight = w * SPEC_PLOT.right;
-    const plotTop = h * (1 - SPEC_PLOT.top);
-    const plotBottom = h * (1 - SPEC_PLOT.bottom);
+    // Plot bbox in image-natural pixels -> CSS pixels via the same scale the
+    // hover tooltip uses, so overlay/hover/playhead all share one source of
+    // truth (the server-measured bbox).
+    const scaleX = rect.width / lastSpec.imgW;
+    const scaleY = rect.height / lastSpec.imgH;
+    const plotLeft = lastSpec.plotL * scaleX;
+    const plotRight = lastSpec.plotR * scaleX;
+    const plotTop = lastSpec.plotT * scaleY;
+    const plotBottom = lastSpec.plotB * scaleY;
     const plotW = plotRight - plotLeft;
     const plotH = plotBottom - plotTop;
     const windowSec = end - start;
     for (const n of win) {
       const t0 = n.performed_time_sec ?? n.perf_time ?? 0;
-      const dur = Math.max(0.04, n.expected_perf_duration ?? 0.15);  // floor so very short notes are still visible
+      const dur = Math.max(0.04, n.expected_perf_duration ?? 0.15);
       const t1 = Math.min(t0 + dur, end);
       const x0 = plotLeft + ((t0 - start) / windowSec) * plotW;
       const x1 = plotLeft + ((t1 - start) / windowSec) * plotW;
       const pitches = Array.isArray(n.pitches_midi) ? n.pitches_midi : [];
       if (!pitches.length) continue;
-      const topMidi = Math.max(...pitches);  // melody = highest voice
+      const topMidi = Math.max(...pitches);
       for (const midi of pitches) {
-        if (midi < SPEC_MIDI.min || midi > SPEC_MIDI.max) continue;
-        const y = plotTop + ((SPEC_MIDI.max - midi) / (SPEC_MIDI.max - SPEC_MIDI.min)) * plotH;
+        if (midi < lastSpec.midiMin || midi > lastSpec.midiMax) continue;
+        const y = plotTop + ((lastSpec.midiMax - midi) / (lastSpec.midiMax - lastSpec.midiMin)) * plotH;
         const bar = document.createElement("div");
         bar.className = "hmm-bar" + (midi === topMidi ? "" : " chord");
         bar.style.left = `${x0}px`;
