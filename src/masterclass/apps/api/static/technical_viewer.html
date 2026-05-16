@@ -129,10 +129,19 @@
         <div class="panel-card" id="panel-spectrogram">
           <div class="panel-head" data-toggle="panel-spectrogram">
             <h2>Spectrogram</h2>
-            <span class="badge" id="spec-badge">mel · 0–8 kHz</span>
+            <span class="badge" id="spec-badge">constant-Q · note names · 24 bins/octave</span>
             <span class="chev"></span>
           </div>
           <div class="panel-body">
+            <details style="margin-bottom:10px;">
+              <summary style="cursor:pointer; color:var(--gold); font-size:12px;">How to read this →</summary>
+              <div style="margin-top:8px; padding:10px 12px; background:rgba(0,0,0,.22); border-radius:4px; color:var(--ink-soft); font-size:12px; line-height:1.55;">
+                <strong>Vertical axis</strong>: pitch as note names (C1 at bottom, C8 at top). Each note has <strong>two adjacent bins</strong> (24 bins/octave = quarter-tone resolution), so a bright band that straddles two bins between, say, <code>C5</code> and <code>C#5</code> means the played pitch is closer to <code>C-quarter-sharp</code> — i.e. <em>actually</em> sharp by ~25–50 cents. Dashed gray lines mark each <code>C</code> octave for orientation.<br><br>
+                <strong>Horizontal axis</strong>: time in seconds (lesson wall-clock, not slice-relative).<br><br>
+                <strong>Color</strong>: amplitude in dB relative to the loudest point in the window (magma colormap; bright yellow = loud, dark purple = silent). Vertical stacks of bright bands above a fundamental are <strong>harmonics</strong> — they're real, not separate notes.<br><br>
+                <strong>Reading a chord</strong>: a single attack at time <em>t</em> usually shows multiple fundamentals lighting up simultaneously, each with its own harmonic stack.
+              </div>
+            </details>
             <div class="toolbar">
               <label>start <input type="number" id="spec-start" step="0.1" min="0" value="0"></label>
               <label>end <input type="number" id="spec-end" step="0.1" min="0.25" value="5"></label>
@@ -312,7 +321,7 @@
     const img = document.getElementById("spec-img");
     const status = document.getElementById("spec-status");
     status.textContent = `rendering ${(end - start).toFixed(2)}s window…`;
-    const url = `/lessons/${SESSION_ID}/debug/spectrogram?start=${start.toFixed(3)}&end=${end.toFixed(3)}&w=1100&h=300`;
+    const url = `/lessons/${SESSION_ID}/debug/spectrogram?start=${start.toFixed(3)}&end=${end.toFixed(3)}&w=1100&h=540`;
     try {
       const blob = await api(url);
       const old = img.src;

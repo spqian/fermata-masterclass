@@ -1457,7 +1457,7 @@ def create_app():
         start: float,
         end: float,
         w: int = 1100,
-        h: int = 280,
+        h: int = 520,
         ctx: TenantContext = Depends(_pro_ctx),
     ) -> Response:
         manifest = store.load_by_id(ctx, session_id)
