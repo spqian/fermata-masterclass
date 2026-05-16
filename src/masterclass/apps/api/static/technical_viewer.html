@@ -209,13 +209,16 @@
               <label class="overlay-toggle" style="margin-left:10px;" title="Which alignment engine to overlay">
                 source
                 <select id="alignment-source" style="background:rgba(255,255,255,.03); color:var(--ink); border:1px solid rgba(255,255,255,.12); border-radius:3px; padding:3px 6px; font-family:'JetBrains Mono',monospace; font-size:11px;">
-                  <option value="hmm">HMM (monophonic + fallback)</option>
-                  <option value="dtw">DTW (chroma · polyphonic)</option>
-                  <option value="basic_pitch">basic-pitch (audio-only)</option>
-                  <option value="basic_pitch_matched">basic-pitch + score-match (RH/LH)</option>
-                  <option value="piano_transcription">piano-transcription (ByteDance, piano-only)</option>
-                  <option value="piano_transcription_matched">piano-transcription + score-match (RH/LH)</option>
+                  <option value="audio_truth_matched" selected>audio-truth + score-match (default)</option>
+                  <option value="audio_truth">audio-truth (raw)</option>
+                  <option value="piano_transcription_matched">piano-transcription + score-match</option>
+                  <option value="piano_transcription">piano-transcription (raw)</option>
+                  <option value="basic_pitch_matched">basic-pitch + score-match</option>
+                  <option value="basic_pitch">basic-pitch (raw)</option>
+                  <option value="dtw">DTW (chroma · score-anchored)</option>
+                  <option value="hmm">HMM (legacy, broken)</option>
                 </select>
+                <button class="ghost" id="rebuild-audio-truth" style="margin-left:8px; padding:5px 9px; font-size:11px;" title="Re-run audio-truth transcription + score matching for this lesson (PTI for piano, basic-pitch otherwise)">↻ Rebuild</button>
               </label>
               <span class="specgram-status" id="spec-status"></span>
             </div>
@@ -606,7 +609,7 @@
     }
   }
 
-  let alignmentSource = "hmm";  // "hmm" | "dtw" | "basic_pitch" - chosen via dropdown
+  let alignmentSource = "audio_truth_matched";  // default to the new unified pipeline output
   let alignedNotes = [];        // notes for the currently-selected source
   async function loadAlignedNotes(force = false) {
     if (!force && alignedNotes.length && alignedNotes._source === alignmentSource) return;
@@ -817,6 +820,31 @@
       const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
       const end = (currentComment.end ?? start + 3) + 0.5;
       await renderHmmWindow(start, end);
+    }
+  });
+  document.getElementById("rebuild-audio-truth").addEventListener("click", async () => {
+    const btn = document.getElementById("rebuild-audio-truth");
+    const status = document.getElementById("spec-status");
+    btn.disabled = true;
+    btn.textContent = "↻ Rebuilding…";
+    status.textContent = "transcribing audio (this can take 30-90s for the model + inference)…";
+    try {
+      const r = await fetch(`/lessons/${SESSION_ID}/debug/rebuild-audio-truth`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `${r.status}`);
+      status.textContent = `rebuilt: ${data.method} detected ${data.notes} notes, matched ${data.matched}`;
+      // Force the overlay + table to refresh with the freshly-built data.
+      hmmNotes = []; alignedNotes = [];
+      if (currentComment) {
+        const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
+        const end = (currentComment.end ?? start + 3) + 0.5;
+        await renderHmmWindow(start, end);
+      }
+    } catch (e) {
+      status.textContent = `rebuild failed: ${e.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "↻ Rebuild";
     }
   });
 

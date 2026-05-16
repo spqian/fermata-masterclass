@@ -37,6 +37,7 @@ from masterclass.engine.onsets import detect_rich_onsets
 from masterclass.engine.rhythm import analyze_rhythm, persist_rhythm
 from masterclass.engine.debug_spectrogram import render_window as render_spectrogram_window
 from masterclass.engine.score_map import build_score_map, persist_score_map
+from masterclass.engine.audio_truth import run_audio_truth_pipeline
 from masterclass.engine.chat_guardrails import (
     ChatGuardrailError,
     check_conversation_turn_cap,
@@ -288,6 +289,21 @@ def create_app():
                 elif manifest.metadata.get("hmm_align_state") == "ready":
                     manifest.metadata["alignment_state"] = "skipped_hmm_ready"
                     store.save(manifest)
+
+                # Audio-truth alignment: replaces the monophonic HMM as our
+                # primary timing source. Uses ByteDance PTI for piano lessons
+                # and Spotify basic-pitch for everything else, then matches
+                # detected notes against the reference MIDI for per-note
+                # staff/voice/measure tagging. Output artifacts:
+                #   analysis/audio_truth_notes.json          (raw transcriber)
+                #   analysis/audio_truth_matched_notes.json  (+ score tagging)
+                # These are what the Technical Viewer's default overlay
+                # consumes; the teacher tools (inspect_voicing, measure_*) can
+                # migrate to them incrementally.
+                run_best_effort(
+                    "audio_truth",
+                    lambda: run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest),
+                )
 
                 run_best_effort(
                     "score_map",
@@ -1439,6 +1455,8 @@ def create_app():
             "basic_pitch_matched": "analysis/basic_pitch_matched_notes.json",
             "piano_transcription": "analysis/piano_transcription_notes.json",
             "piano_transcription_matched": "analysis/piano_transcription_matched_notes.json",
+            "audio_truth": "analysis/audio_truth_notes.json",
+            "audio_truth_matched": "analysis/audio_truth_matched_notes.json",
         }
         if src not in artifact_by_src:
             raise HTTPException(status_code=400, detail=f"unknown alignment source: {source}")
@@ -1596,6 +1614,30 @@ def create_app():
                 "end_sec": (end_ms / 1000.0) if end_ms is not None else None,
             })
         return {"clips": clips}
+
+    @app.post("/lessons/{session_id}/debug/rebuild-audio-truth")
+    def debug_rebuild_audio_truth(
+        session_id: str,
+        ctx: TenantContext = Depends(_pro_ctx),
+    ) -> dict:
+        """Re-run audio-truth transcription + score-matching on an existing lesson.
+
+        Useful for lessons created before the audio-truth pipeline existed
+        (everything in the local store right now), or after re-tuning the
+        transcriber. Runs synchronously since PTI/basic-pitch model load
+        plus inference is on the order of 30-90s and the user is actively
+        watching the technical viewer.
+        """
+        manifest = store.load_by_id(ctx, session_id)
+        try:
+            summary = run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - surfaces upstream failures
+            import logging as _logging
+            _logging.getLogger(__name__).exception("rebuild-audio-truth failed for %s", session_id)
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        return summary
 
     @app.post("/lessons/{session_id}/chat")
     def lesson_chat(session_id: str, body: ChatRequest = Body(...), ctx: TenantContext = Depends(tenant_from_header)) -> dict:
