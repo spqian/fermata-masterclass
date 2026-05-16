@@ -252,9 +252,10 @@ def create_app():
                 # measure tagging. Output artifacts:
                 #   analysis/audio_truth_notes.json          (raw transcriber)
                 #   analysis/audio_truth_matched_notes.json  (+ score tagging)
-                #   analysis/hmm_aligned_notes.json          (legacy shim)
-                #   analysis/hmm_alignment.json              (legacy shim)
-                # The legacy "hmm_*" artifacts are synthesised from audio_truth
+                #   analysis/aligned_notes.json              (legacy shim, new name)
+                #   analysis/hmm_aligned_notes.json          (legacy shim, deprecated name)
+                #   analysis/hmm_alignment.json              (legacy shim, deprecated name)
+                # The legacy shim artifacts are synthesised from audio_truth
                 # data so the old consumers (voicing/rhythm/intonation/
                 # score_map/inspect_*) keep working unchanged. They will be
                 # removed once those consumers are migrated to read
@@ -263,6 +264,20 @@ def create_app():
                     "audio_truth",
                     lambda: run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest),
                 )
+                # Dual-write the audio-truth status under the vocabulary-clean
+                # key ``aligned_notes_state`` so newer UI/code can read either
+                # name. We keep writing ``audio_truth_state`` (above) until
+                # every consumer has migrated; eventually that key, the
+                # legacy hmm-named shim artifacts, and this dual-write all
+                # go away in the same release.
+                _at_state = manifest.metadata.get("audio_truth_state")
+                if _at_state is not None:
+                    manifest.metadata["aligned_notes_state"] = _at_state
+                    if "audio_truth_error" in manifest.metadata:
+                        manifest.metadata["aligned_notes_error"] = manifest.metadata.get("audio_truth_error")
+                    if "audio_truth_updated_at" in manifest.metadata:
+                        manifest.metadata["aligned_notes_updated_at"] = manifest.metadata["audio_truth_updated_at"]
+                    store.save(manifest)
 
                 run_best_effort(
                     "score_map",
@@ -275,12 +290,14 @@ def create_app():
                 )
 
                 profile = load_instrument_profile(manifest.instrument_profile)
-                # Gate downstream analyses on audio_truth_state (was hmm_align_state).
-                # The audio-truth pipeline writes the legacy hmm_aligned_notes.json
-                # and hmm_alignment.json shim so the existing consumers still find
-                # their inputs. Once those consumers are individually migrated
-                # to read audio_truth_matched_notes.json directly, the shim and
-                # this metadata flag both go away.
+                # Gate downstream analyses on the audio-truth stage status.
+                # We read ``audio_truth_state`` here for back-compat; the
+                # equivalent vocabulary-clean key ``aligned_notes_state``
+                # is mirrored immediately after the audio-truth run above
+                # so newer code can read either name. Both will live for
+                # one release; once every consumer has migrated to
+                # ``aligned_notes_state``, remove the dual-write and read
+                # only the new name.
                 if intonation_enabled_for_profile(profile) and manifest.metadata.get("audio_truth_state") == "ready":
                     run_best_effort("intonation", lambda: analyze_intonation(storage=storage, store=store, manifest=manifest))
                 else:
@@ -1054,13 +1071,16 @@ def create_app():
         else:
             payload = storage.read_json(key)
 
-        # Prefer the HMM alignment (per-note Viterbi) over the chroma DTW fallback
-        # over the teacher's listening estimates. Re-anchor each comment's start
+        # Prefer the audio-truth-derived per-measure alignment over the
+        # chroma DTW fallback over the teacher's listening estimates. The
+        # ``analysis/hmm_alignment.json`` artifact is the legacy-shim file
+        # written by ``audio_truth._build_legacy_hmm_artifacts`` and will
+        # be renamed in a follow-up pass. Re-anchor each comment's start
         # time to the alignment-derived measure start.
         align_doc: dict[str, Any] | None = None
         align_source = "llm_estimate"
         for candidate_key, candidate_source in (
-            ("analysis/hmm_alignment.json", "hmm_viterbi"),
+            ("analysis/hmm_alignment.json", "audio_truth_shim"),
             ("analysis/alignment.json", "chroma_dtw"),
         ):
             key2 = manifest.artifacts.get(candidate_key)
@@ -1372,43 +1392,73 @@ def create_app():
     @app.get("/lessons/{session_id}/debug/aligned-notes")
     def debug_aligned_notes(
         session_id: str,
-        source: str = "hmm",
+        source: str = "audio_truth_matched",
         start: float | None = None,
         end: float | None = None,
         ctx: TenantContext = Depends(_pro_ctx),
     ) -> dict:
-        """Unified alignment endpoint: serve HMM, DTW, or basic-pitch notes.
+        """Unified alignment endpoint: serve audio-truth / DTW / basic-pitch notes.
 
         ``source`` chooses the alignment artifact:
-          - ``hmm``         -> analysis/hmm_aligned_notes.json  (monophonic HMM
-                              + expected-tempo fallback; current default)
-          - ``dtw``         -> analysis/dtw_aligned_notes.json  (chroma DTW
-                              against reference MIDI, polyphonic; populated by
-                              scripts/run_chroma_dtw_for_session.py)
-          - ``basic_pitch`` -> analysis/basic_pitch_notes.json  (audio-only
-                              polyphonic note detection from Spotify's
-                              basic-pitch model; no score needed)
+          - ``audio_truth_matched`` -> analysis/audio_truth_matched_notes.json
+                              (canonical: transcriber + score matcher; default)
+          - ``audio_truth`` -> analysis/audio_truth_notes.json (raw transcriber)
+          - ``aligned``     -> analysis/aligned_notes.json    (legacy shim, new name)
+          - ``hmm``         -> analysis/hmm_aligned_notes.json (legacy shim, deprecated name)
+          - ``dtw``         -> analysis/dtw_aligned_notes.json (chroma DTW; tooling)
+          - ``basic_pitch`` -> analysis/basic_pitch_notes.json (audio-only fallback)
+
+        Notes are also filtered to the lesson's PlayedRange: rows whose
+        ``measure`` falls outside ``[first_measure, last_measure]`` are
+        dropped, with a ``played_range`` block echoed on the response.
         """
-        src = (source or "hmm").lower().strip()
+        src = (source or "audio_truth_matched").lower().strip()
         artifact_by_src = {
+            "audio_truth_matched": "analysis/audio_truth_matched_notes.json",
+            "audio_truth": "analysis/audio_truth_notes.json",
+            "aligned": "analysis/aligned_notes.json",
             "hmm": "analysis/hmm_aligned_notes.json",
             "dtw": "analysis/dtw_aligned_notes.json",
             "basic_pitch": "analysis/basic_pitch_notes.json",
             "basic_pitch_matched": "analysis/basic_pitch_matched_notes.json",
             "piano_transcription": "analysis/piano_transcription_notes.json",
             "piano_transcription_matched": "analysis/piano_transcription_matched_notes.json",
-            "audio_truth": "analysis/audio_truth_notes.json",
-            "audio_truth_matched": "analysis/audio_truth_matched_notes.json",
         }
         if src not in artifact_by_src:
             raise HTTPException(status_code=400, detail=f"unknown alignment source: {source}")
-        _, key = _load_lesson_artifact(ctx, session_id, artifact_by_src[src])
+        manifest, key = _load_lesson_artifact(ctx, session_id, artifact_by_src[src])
         if not key:
             raise HTTPException(status_code=404, detail=f"no {src} aligned notes for this lesson")
         payload = storage.read_json(key)
         notes = payload.get("notes") if isinstance(payload, dict) else None
         if not isinstance(notes, list):
             return payload if isinstance(payload, dict) else {"notes": [], "source": src}
+
+        # Scope by played-range: rows from measures outside the lesson's
+        # played window are noise (they only exist because the matcher
+        # snapped detected onsets to nearby score events). Drop them here
+        # so the UI never has to filter again.
+        from masterclass.core.played_range import derive_played_range
+        masterclass_id = manifest.metadata.get("masterclass_id")
+        mc_manifest = None
+        if masterclass_id:
+            try:
+                mc_manifest = masterclasses.load_by_id(ctx, masterclass_id)
+            except FileNotFoundError:
+                mc_manifest = None
+        played_range = derive_played_range(manifest, mc_manifest)
+        in_range_notes: list[dict[str, Any]] = []
+        dropped_out_of_range = 0
+        for n in notes:
+            if not isinstance(n, dict):
+                continue
+            m = n.get("measure")
+            if m is None or played_range.contains(m):
+                in_range_notes.append(n)
+            else:
+                dropped_out_of_range += 1
+        notes = in_range_notes
+
         if start is not None or end is not None:
             lo = start if start is not None else float("-inf")
             hi = end if end is not None else float("inf")
@@ -1422,6 +1472,12 @@ def create_app():
             "source": src,
             "method": payload.get("method") if isinstance(payload, dict) else None,
             "schema_version": payload.get("schema_version") if isinstance(payload, dict) else None,
+            "played_range": {
+                "first_measure": played_range.first_measure,
+                "last_measure": played_range.last_measure,
+                "source": played_range.source,
+            },
+            "dropped_out_of_range": dropped_out_of_range,
         }
 
     @app.get("/lessons/{session_id}/debug/hmm-aligned-notes")
@@ -1431,22 +1487,13 @@ def create_app():
         end: float | None = None,
         ctx: TenantContext = Depends(_pro_ctx),
     ) -> dict:
-        _, key = _load_lesson_artifact(ctx, session_id, "analysis/hmm_aligned_notes.json")
-        if not key:
-            raise HTTPException(status_code=404, detail="no HMM aligned notes for this lesson")
-        payload = storage.read_json(key)
-        notes = payload.get("notes") if isinstance(payload, dict) else None
-        if not isinstance(notes, list):
-            return payload if isinstance(payload, dict) else {"notes": []}
-        if start is not None or end is not None:
-            lo = start if start is not None else float("-inf")
-            hi = end if end is not None else float("inf")
-            notes = [
-                n for n in notes
-                if isinstance(n, dict)
-                and lo <= float(n.get("performed_time_sec", n.get("perf_time", 0.0)) or 0.0) <= hi
-            ]
-        return {"notes": notes, "schema_version": payload.get("schema_version") if isinstance(payload, dict) else None}
+        # Deprecated alias: forwards to the unified endpoint with
+        # ``source="hmm"`` (the legacy-shim artifact). Kept so external
+        # tooling that still hits the old URL keeps working until the
+        # shim itself is deleted.
+        return debug_aligned_notes(
+            session_id=session_id, source="hmm", start=start, end=end, ctx=ctx,
+        )
 
     @app.get("/lessons/{session_id}/debug/pitch-events")
     def debug_pitch_events(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
