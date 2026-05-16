@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+from cryptography.fernet import Fernet, InvalidToken
 from itsdangerous import BadSignature, URLSafeSerializer
 
 from masterclass.auth.encryption import ensure_key_encryption_key
@@ -33,6 +34,18 @@ def _secret() -> str:
 
 def _serializer(salt: str) -> URLSafeSerializer:
     return URLSafeSerializer(_secret(), salt=salt)
+
+
+def _oauth_state_cipher() -> Fernet:
+    """Symmetric cipher used to encrypt the short-lived OAuth state cookie.
+
+    The cookie carries the PKCE ``code_verifier`` and OIDC ``nonce``, both of
+    which authorize completing the auth exchange. They are already protected
+    by HttpOnly/Secure/SameSite cookie flags, but encryption-at-rest in the
+    cookie value defends against any future leak (e.g. server-side log spill
+    or a separate XSS bug that bypasses HttpOnly via a browser bug).
+    """
+    return Fernet(ensure_key_encryption_key().encode("ascii"))
 
 
 def _is_localhost(hostname: str | None) -> bool:
@@ -159,12 +172,12 @@ def build_login_redirect(request, next_url: str | None = None):
     verifier = secrets.token_urlsafe(64)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(24)
-    oauth_state = _serializer("fermata-oauth").dumps({
+    oauth_state = _oauth_state_cipher().encrypt(json.dumps({
         "state": state,
         "code_verifier": verifier,
         "next": _same_origin_path(next_url),
         "nonce": nonce,
-    })
+    }).encode("utf-8")).decode("ascii")
     params = {
         "client_id": os.environ["GOOGLE_OAUTH_CLIENT_ID"],
         "redirect_uri": redirect_uri,
@@ -205,8 +218,8 @@ async def complete_google_callback(request) -> tuple[GoogleIdentity, str]:
     if not raw:
         raise HTTPException(status_code=400, detail="Google sign-in state cookie expired; try again")
     try:
-        oauth_state = _serializer("fermata-oauth").loads(raw)
-    except BadSignature as exc:
+        oauth_state = json.loads(_oauth_state_cipher().decrypt(raw.encode("ascii"), ttl=900).decode("utf-8"))
+    except (InvalidToken, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="Google sign-in state cookie is invalid; try again") from exc
     if oauth_state.get("state") != state:
         raise HTTPException(status_code=400, detail="Google sign-in state mismatch; try again")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1097,12 +1099,20 @@ def create_app():
             media_type = "video/mp4"
         return Response(content=storage.read_bytes(artifact_key), media_type=media_type)
 
+    _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
     def _player_html_response(session_id: str) -> HTMLResponse:
-        # The HTML reads other endpoints client-side with ?user_id; serving the
-        # shell as anonymous keeps it linkable and avoids header pre-flight.
+        # Strict allowlist: session IDs are uuid4().hex (32 lowercase hex chars).
+        # Without this, a crafted path like /lessons/";alert(1);//abc/player would
+        # be injected verbatim into the JS string `const SESSION_ID = "..."`,
+        # giving a reflected XSS (caught by CodeQL py/reflective-xss).
+        if not _SESSION_ID_RE.match(session_id or ""):
+            raise HTTPException(status_code=400, detail="invalid session id")
         html = (static_dir / "player.html").read_text(encoding="utf-8")
+        # Defense in depth: JSON-encode the literal so even if the regex above
+        # is ever loosened, the substitution stays a safe JS string literal.
         return HTMLResponse(
-            html.replace("__SESSION_ID__", session_id),
+            html.replace('"__SESSION_ID__"', json.dumps(session_id)),
             headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
 
