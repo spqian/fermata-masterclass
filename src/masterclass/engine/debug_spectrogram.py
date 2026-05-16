@@ -32,14 +32,25 @@ DEFAULT_HEIGHT = 520           # taller so 88 piano keys are legible
 BINS_PER_OCTAVE = 24           # quarter-tone resolution -> see pitch deviation (sharp/flat) within a semitone
 N_OCTAVES = 7                  # C1 to C8 covers the entire usable piano range
 N_BINS = BINS_PER_OCTAVE * N_OCTAVES
-FMIN_NOTE = "C1"               # ~32.7 Hz
+FMIN_NOTE = "C1"               # ~32.7 Hz, MIDI 24
+FMIN_MIDI = 24
+FMAX_MIDI = FMIN_MIDI + N_BINS // (BINS_PER_OCTAVE // 12)  # MIDI at top of plot (C8 = 108)
 MAX_WINDOW_SEC = 60.0          # cap a single rendered slice to keep latency sane
 MIN_WINDOW_SEC = 0.25
+
+# Pinned plot-area margins (fractions of figure). Frontend uses these to
+# translate mouse pixel coordinates -> (time, frequency) for the hover tooltip.
+# If you change these, bump the cache-key version below and the matching
+# constants in static/technical_viewer.html.
+PLOT_LEFT_FRAC = 0.060
+PLOT_RIGHT_FRAC = 0.992
+PLOT_BOTTOM_FRAC = 0.115
+PLOT_TOP_FRAC = 0.935
 
 
 def _cache_key(audio_key: str, start: float, end: float, width: int, height: int) -> str:
     digest = hashlib.sha1(
-        f"{audio_key}|{start:.3f}|{end:.3f}|{width}|{height}|cqt-v1".encode("utf-8")
+        f"{audio_key}|{start:.3f}|{end:.3f}|{width}|{height}|cqt-v2-pinned".encode("utf-8")
     ).hexdigest()
     # Co-locate the cache under the lesson's analysis/ prefix so it travels
     # with the rest of the per-lesson artifacts.
@@ -135,7 +146,15 @@ def render_window(
         color="#c9a96a",
         fontsize=10,
     )
-    fig.tight_layout(pad=0.4)
+    # Pin the plot area to fixed fractions of the figure so the frontend can
+    # translate mouse coordinates into (time, frequency) for the hover tooltip
+    # without round-tripping to the server.
+    fig.subplots_adjust(
+        left=PLOT_LEFT_FRAC,
+        right=PLOT_RIGHT_FRAC,
+        bottom=PLOT_BOTTOM_FRAC,
+        top=PLOT_TOP_FRAC,
+    )
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=fig.get_facecolor())

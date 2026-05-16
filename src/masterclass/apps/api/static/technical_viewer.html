@@ -77,6 +77,17 @@
     table.notes th { color:var(--ink-mute); font-weight:500; letter-spacing:.08em; text-transform:uppercase; font-size:10px; }
     table.notes tr.highlight td { background:rgba(201,169,106,.08); }
     .conf-low { color:var(--warn); } .conf-medium { color:var(--accent); } .conf-high { color:var(--good); }
+    .spec-wrap { position:relative; }
+    .spec-wrap .spec-img { cursor:crosshair; }
+    .spec-tooltip { position:absolute; pointer-events:none; background:rgba(11,13,18,.95); border:1px solid var(--gold); color:var(--ink); padding:8px 10px; border-radius:4px; font-family:"JetBrains Mono",monospace; font-size:11px; line-height:1.55; box-shadow:0 4px 14px rgba(0,0,0,.6); transform:translate(-50%, -110%); white-space:nowrap; display:none; z-index:30; }
+    .spec-tooltip .label { color:var(--ink-mute); }
+    .spec-tooltip .val { color:var(--gold); font-weight:600; }
+    .spec-tooltip .cents-flat { color:var(--accent); }
+    .spec-tooltip .cents-sharp { color:var(--warn); }
+    .spec-tooltip .cents-intune { color:var(--good); }
+    .spec-crosshair { position:absolute; pointer-events:none; background:rgba(201,169,106,.55); display:none; z-index:25; }
+    .spec-crosshair.h { height:1px; width:100%; left:0; }
+    .spec-crosshair.v { width:1px; height:100%; top:0; }
     .placeholder { color:var(--ink-mute); font-style:italic; padding:14px 0; }
     .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:12px; color:var(--ink-soft); }
     .toolbar input[type=number] { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.1); color:var(--ink); padding:5px 8px; border-radius:3px; width:80px; font-family:"JetBrains Mono",monospace; }
@@ -149,7 +160,12 @@
               <button class="ghost" id="spec-fit-to-comment">Fit to comment</button>
               <span class="specgram-status" id="spec-status"></span>
             </div>
-            <img class="spec-img" id="spec-img" alt="spectrogram (select a comment or press Render)">
+            <div class="spec-wrap">
+              <img class="spec-img" id="spec-img" alt="spectrogram (select a comment or press Render)">
+              <div class="spec-crosshair h" id="spec-hline"></div>
+              <div class="spec-crosshair v" id="spec-vline"></div>
+              <div class="spec-tooltip" id="spec-tooltip"></div>
+            </div>
           </div>
         </div>
 
@@ -219,9 +235,80 @@
     return r.text();
   }
 
-  let comments = [];
-  let hmmNotes = [];
-  let currentComment = null;
+  // ---------- spectrogram hover ----------
+  // These MUST stay in sync with the constants in engine/debug_spectrogram.py:
+  //   PLOT_LEFT_FRAC, PLOT_RIGHT_FRAC, PLOT_BOTTOM_FRAC, PLOT_TOP_FRAC,
+  //   FMIN_MIDI (24 = C1), FMAX_MIDI (108 = C8).
+  // The y-axis of the CQT is log-frequency (linear in MIDI semitones), so the
+  // pixel-to-MIDI mapping is a straight line; cents-off-the-nearest-semitone
+  // is just the fractional part times 100.
+  const SPEC_PLOT = { left: 0.060, right: 0.992, bottom: 0.115, top: 0.935 };
+  const SPEC_MIDI = { min: 24, max: 108 };
+  let lastSpec = null;  // { startSec, endSec, naturalW, naturalH }
+
+  function midiToNoteName(midiFloat) {
+    const m = Math.round(midiFloat);
+    const cents = Math.round((midiFloat - m) * 100);
+    const octave = Math.floor(m / 12) - 1;
+    const name = NOTE_NAMES[((m % 12) + 12) % 12] + octave;
+    return { name, cents, midi: m };
+  }
+  function midiToHz(midiFloat) { return 440 * Math.pow(2, (midiFloat - 69) / 12); }
+
+  function bindSpectrogramHover() {
+    const img = document.getElementById("spec-img");
+    const tip = document.getElementById("spec-tooltip");
+    const hline = document.getElementById("spec-hline");
+    const vline = document.getElementById("spec-vline");
+    if (img.dataset.boundHover) return;
+    img.dataset.boundHover = "1";
+    const show = (visible) => {
+      tip.style.display = visible ? "block" : "none";
+      hline.style.display = visible ? "block" : "none";
+      vline.style.display = visible ? "block" : "none";
+    };
+    img.addEventListener("mouseenter", () => show(true));
+    img.addEventListener("mouseleave", () => show(false));
+    img.addEventListener("mousemove", (ev) => {
+      if (!lastSpec) return;
+      const rect = img.getBoundingClientRect();
+      const xPx = ev.clientX - rect.left;   // pixels within the displayed (CSS-scaled) image
+      const yPx = ev.clientY - rect.top;
+      const w = rect.width, h = rect.height;
+      // The pinned plot area lives at these CSS-pixel positions inside the img.
+      const plotLeft = w * SPEC_PLOT.left;
+      const plotRight = w * SPEC_PLOT.right;
+      const plotTop = h * (1 - SPEC_PLOT.top);
+      const plotBottom = h * (1 - SPEC_PLOT.bottom);
+      if (xPx < plotLeft || xPx > plotRight || yPx < plotTop || yPx > plotBottom) {
+        show(false);
+        return;
+      }
+      show(true);
+      const xFrac = (xPx - plotLeft) / (plotRight - plotLeft);
+      const yFrac = (yPx - plotTop) / (plotBottom - plotTop);
+      const tSec = lastSpec.startSec + xFrac * (lastSpec.endSec - lastSpec.startSec);
+      const midi = SPEC_MIDI.max - yFrac * (SPEC_MIDI.max - SPEC_MIDI.min);
+      const hz = midiToHz(midi);
+      const note = midiToNoteName(midi);
+      let centsLabel, centsClass;
+      if (Math.abs(note.cents) <= 5) { centsLabel = "in tune"; centsClass = "cents-intune"; }
+      else if (note.cents > 0)       { centsLabel = `+${note.cents}¢ sharp`; centsClass = "cents-sharp"; }
+      else                            { centsLabel = `${note.cents}¢ flat`; centsClass = "cents-flat"; }
+      tip.innerHTML =
+        `<span class="label">note</span> <span class="val">${note.name}</span> ` +
+        `<span class="${centsClass}">(${centsLabel})</span><br>` +
+        `<span class="label">freq</span> <span class="val">${hz.toFixed(1)} Hz</span><br>` +
+        `<span class="label">time</span> <span class="val">${tSec.toFixed(3)} s</span><br>` +
+        `<span class="label">midi</span> <span class="val">${midi.toFixed(2)}</span>`;
+      // Position tooltip just above the cursor; clamp so it stays inside the panel.
+      let tipX = xPx, tipY = yPx;
+      tip.style.left = `${tipX}px`;
+      tip.style.top = `${tipY}px`;
+      hline.style.top = `${yPx}px`;
+      vline.style.left = `${xPx}px`;
+    });
+  }
 
   async function loadComments() {
     try {
@@ -327,7 +414,13 @@
       const old = img.src;
       img.src = URL.createObjectURL(blob);
       if (old.startsWith("blob:")) URL.revokeObjectURL(old);
-      status.textContent = `rendered ${start.toFixed(2)}s → ${end.toFixed(2)}s`;
+      // Remember the time range so the mousemove handler can translate
+      // pixel coordinates -> data coordinates without re-fetching.
+      img.addEventListener("load", () => {
+        lastSpec = { startSec: start, endSec: end, naturalW: img.naturalWidth, naturalH: img.naturalHeight };
+        bindSpectrogramHover();
+      }, { once: true });
+      status.textContent = `rendered ${start.toFixed(2)}s → ${end.toFixed(2)}s — hover for note + freq`;
     } catch (e) {
       status.textContent = `render failed: ${e.message}`;
     }
