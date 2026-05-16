@@ -25,19 +25,16 @@ from masterclass.core.models import TenantContext
 from masterclass.core.sessions import SessionStore
 from masterclass.core.user_profiles import DEFAULT_MODEL, UserProfileStore
 from masterclass.engine.score_prep import ScorePrepConfig, prepare_score, select_score_pages_for_lesson
-from masterclass.engine.alignment import AlignmentConfig, align_lesson_with_midi, persist_alignment
 from masterclass.engine.analysis import analyze_session, build_evidence_packet
-from masterclass.engine.hmm_align import align_lesson_with_midi_hmm, persist_hmm_alignment
+from masterclass.engine.audio_truth import run_audio_truth_pipeline
 from masterclass.engine.ingest import extract_media_artifacts
 from masterclass.engine.instruments import intonation_enabled_for_profile, load_instrument_profile
 from masterclass.engine.intonation import analyze_intonation
 from masterclass.engine.mechanical_comments import generate_mechanical_comments, persist_mechanical_comments
-from masterclass.engine.midi_finder import MidiFinderConfig, auto_attach_midi_to_masterclass
 from masterclass.engine.onsets import detect_rich_onsets
 from masterclass.engine.rhythm import analyze_rhythm, persist_rhythm
 from masterclass.engine.debug_spectrogram import render_window as render_spectrogram_window
 from masterclass.engine.score_map import build_score_map, persist_score_map
-from masterclass.engine.audio_truth import run_audio_truth_pipeline
 from masterclass.engine.chat_guardrails import (
     ChatGuardrailError,
     check_conversation_turn_cap,
@@ -239,67 +236,28 @@ def create_app():
                         warn_stage(stage, exc)
 
                 class_manifest = None
-                midi_key = None
-                midi_bytes = None
                 if masterclass_id:
                     try:
                         class_manifest = masterclasses.load_by_id(ctx, masterclass_id)
-                        for _ in range(40):
-                            state = class_manifest.metadata.get("midi_find_state")
-                            if state in {"ready", "not_found", "skipped", "skipped_user_upload", "failed", None}:
-                                break
-                            time.sleep(3)
-                            class_manifest = masterclasses.load_by_id(ctx, masterclass_id)
-                        midi_key = class_manifest.artifacts.get("reference/midi")
-                        if midi_key and storage.exists(midi_key):
-                            midi_bytes = storage.read_bytes(midi_key)
                     except FileNotFoundError:
                         class_manifest = None
 
                 run_best_effort("onsets", lambda: detect_rich_onsets(storage=storage, store=store, manifest=manifest))
 
-                if midi_bytes:
-                    def run_hmm() -> None:
-                        result = align_lesson_with_midi_hmm(
-                            storage=storage,
-                            store=store,
-                            manifest=manifest,
-                            midi_bytes=midi_bytes,
-                        )
-                        persist_hmm_alignment(storage=storage, store=store, manifest=manifest, result=result)
-
-                    run_best_effort("hmm_align", run_hmm)
-                else:
-                    manifest.metadata["hmm_align_state"] = "skipped"
-                    manifest.metadata["hmm_align_error"] = "reference MIDI missing"
-                    store.save(manifest)
-
-                if midi_bytes and manifest.metadata.get("hmm_align_state") != "ready":
-                    def run_chroma_fallback() -> None:
-                        result = align_lesson_with_midi(
-                            storage=storage,
-                            store=store,
-                            ffmpeg=ffmpeg,
-                            manifest=manifest,
-                            midi_bytes=midi_bytes,
-                        )
-                        persist_alignment(storage=storage, store=store, manifest=manifest, result=result)
-
-                    run_best_effort("alignment", run_chroma_fallback)
-                elif manifest.metadata.get("hmm_align_state") == "ready":
-                    manifest.metadata["alignment_state"] = "skipped_hmm_ready"
-                    store.save(manifest)
-
-                # Audio-truth alignment: replaces the monophonic HMM as our
-                # primary timing source. Uses ByteDance PTI for piano lessons
-                # and Spotify basic-pitch for everything else, then matches
-                # detected notes against the reference MIDI for per-note
-                # staff/voice/measure tagging. Output artifacts:
+                # Audio-truth alignment: primary timing source. Uses ByteDance
+                # PTI for piano lessons and Spotify basic-pitch for everything
+                # else, then matches detected notes against the reference score
+                # (MusicXML preferred, MIDI fallback) for per-note staff/voice/
+                # measure tagging. Output artifacts:
                 #   analysis/audio_truth_notes.json          (raw transcriber)
                 #   analysis/audio_truth_matched_notes.json  (+ score tagging)
-                # These are what the Technical Viewer's default overlay
-                # consumes; the teacher tools (inspect_voicing, measure_*) can
-                # migrate to them incrementally.
+                #   analysis/hmm_aligned_notes.json          (legacy shim)
+                #   analysis/hmm_alignment.json              (legacy shim)
+                # The legacy "hmm_*" artifacts are synthesised from audio_truth
+                # data so the old consumers (voicing/rhythm/intonation/
+                # score_map/inspect_*) keep working unchanged. They will be
+                # removed once those consumers are migrated to read
+                # audio_truth_matched_notes directly.
                 run_best_effort(
                     "audio_truth",
                     lambda: run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest),
@@ -316,13 +274,19 @@ def create_app():
                 )
 
                 profile = load_instrument_profile(manifest.instrument_profile)
-                if intonation_enabled_for_profile(profile) and manifest.metadata.get("hmm_align_state") == "ready":
+                # Gate downstream analyses on audio_truth_state (was hmm_align_state).
+                # The audio-truth pipeline writes the legacy hmm_aligned_notes.json
+                # and hmm_alignment.json shim so the existing consumers still find
+                # their inputs. Once those consumers are individually migrated
+                # to read audio_truth_matched_notes.json directly, the shim and
+                # this metadata flag both go away.
+                if intonation_enabled_for_profile(profile) and manifest.metadata.get("audio_truth_state") == "ready":
                     run_best_effort("intonation", lambda: analyze_intonation(storage=storage, store=store, manifest=manifest))
                 else:
                     manifest.metadata["intonation_state"] = "skipped"
                     store.save(manifest)
 
-                if manifest.metadata.get("hmm_align_state") == "ready":
+                if manifest.metadata.get("audio_truth_state") == "ready":
                     run_best_effort(
                         "rhythm",
                         lambda: persist_rhythm(
@@ -336,7 +300,7 @@ def create_app():
                     manifest.metadata["rhythm_state"] = "skipped"
                     store.save(manifest)
 
-                if profile.family == "keyboard" and manifest.metadata.get("hmm_align_state") == "ready":
+                if profile.family == "keyboard" and manifest.metadata.get("audio_truth_state") == "ready":
                     run_best_effort(
                         "voicing",
                         lambda: persist_voicing(
@@ -470,73 +434,6 @@ def create_app():
         except Exception:  # pragma: no cover - background errors land on the manifest
             import logging
             logging.exception("score prep failed for masterclass %s", masterclass_id)
-
-    def _run_midi_find(masterclass_id: str, tenant_id: str, user_id: str) -> None:
-        import concurrent.futures
-        import logging
-        OVERALL_WALL_CLOCK_SEC = 120
-
-        try:
-            ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
-            manifest = masterclasses.load_by_id(ctx, masterclass_id)
-            if "reference/midi" in manifest.artifacts:
-                manifest.metadata["midi_find_state"] = "skipped_user_upload"
-                masterclasses.save(manifest)
-                return
-            try:
-                _build_llm_provider_for_user(user_id)
-            except HTTPException as exc:
-                manifest.metadata["midi_find_state"] = "skipped"
-                manifest.metadata["midi_find_error"] = str(exc.detail)
-                masterclasses.save(manifest)
-                return
-
-            def _work() -> None:
-                # Build a provider with a short HTTP timeout for the search calls
-                # so a hung Gemini grounded search doesn't pin the manifest in
-                # "running" state for minutes. The wall-clock concurrent.futures
-                # timeout below is the outer safety net.
-                from masterclass.agent.llm import SharedKeyGeminiConfig
-                short_provider = _build_llm_provider_for_user(
-                    user_id,
-                    config=SharedKeyGeminiConfig(request_timeout_sec=30, max_tool_calls=3),
-                )
-                auto_attach_midi_to_masterclass(
-                    storage=storage,
-                    masterclass_store=masterclasses,
-                    manifest=manifest,
-                    provider=short_provider,
-                    config=MidiFinderConfig(model=midi_find_model),
-                )
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(_work)
-                try:
-                    fut.result(timeout=OVERALL_WALL_CLOCK_SEC)
-                except concurrent.futures.TimeoutError:
-                    # The Gemini search is still running but we'd rather mark the
-                    # state ASAP so the user can move on. The thread will finish
-                    # in the background; we just abandon its result.
-                    fut.cancel()
-                    refreshed = masterclasses.load_by_id(ctx, masterclass_id)
-                    refreshed.metadata["midi_find_state"] = "not_found"
-                    refreshed.metadata["midi_find_error"] = (
-                        f"web search timed out after {OVERALL_WALL_CLOCK_SEC}s — "
-                        "upload a MIDI manually or re-run find"
-                    )
-                    refreshed.metadata["midi_find_updated_at"] = datetime.now(UTC).isoformat()
-                    masterclasses.save(refreshed)
-        except Exception as exc:
-            logging.exception("midi auto-find failed for masterclass %s", masterclass_id)
-            try:
-                ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
-                manifest = masterclasses.load_by_id(ctx, masterclass_id)
-                manifest.metadata["midi_find_state"] = "failed"
-                manifest.metadata["midi_find_error"] = f"{type(exc).__name__}: {exc}"
-                manifest.metadata["midi_find_updated_at"] = datetime.now(UTC).isoformat()
-                masterclasses.save(manifest)
-            except Exception:
-                pass
 
     class CreateSessionRequest(BaseModel):
         source_filename: str | None = None
@@ -820,9 +717,6 @@ def create_app():
         if has_score_pdf:
             manifest.metadata["score_prep_state"] = "queued"
             manifest.metadata["score_prep_updated_at"] = datetime.now(UTC).isoformat()
-        if not has_midi:
-            manifest.metadata["midi_find_state"] = "queued"
-            manifest.metadata["midi_find_updated_at"] = datetime.now(UTC).isoformat()
         masterclasses.save(manifest)
         if has_score_pdf:
             _spawn(
@@ -831,56 +725,40 @@ def create_app():
                 manifest.masterclass.tenant_id,
                 manifest.masterclass.user_id,
             )
-        if not has_midi:
-            _spawn(
-                _run_midi_find,
-                manifest.masterclass.masterclass_id,
-                manifest.masterclass.tenant_id,
-                manifest.masterclass.user_id,
-            )
         return manifest.to_json()
 
     @app.post("/masterclasses/{masterclass_id}/find-midi")
-    def rerun_midi_find(
+    def rerun_midi_find_deprecated(
         masterclass_id: str,
-        background: BackgroundTasks,
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
-        try:
-            manifest = masterclasses.load_by_id(ctx, masterclass_id)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="masterclass not found") from exc
-        manifest.metadata["midi_find_state"] = "queued"
-        manifest.metadata["midi_find_updated_at"] = datetime.now(UTC).isoformat()
-        masterclasses.save(manifest)
-        _spawn(
-            _run_midi_find,
-            manifest.masterclass.masterclass_id,
-            manifest.masterclass.tenant_id,
-            manifest.masterclass.user_id,
+        """Deprecated. MIDI auto-find was removed when the audio-truth
+        pipeline migrated to MusicXML for score correlation. The endpoint
+        is kept as a 410 Gone for backward compatibility with old clients."""
+        raise HTTPException(
+            status_code=410,
+            detail="MIDI auto-find has been removed. Audio alignment now uses the "
+                   "MusicXML score directly via the audio-truth pipeline.",
         )
-        return manifest.to_json()
 
     @app.get("/masterclasses/{masterclass_id}/midi-find")
-    def get_midi_find(masterclass_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+    def get_midi_find_deprecated(masterclass_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        """Deprecated alias matching the old midi-find shape, with empty
+        results so any UI still polling this endpoint sees a stable response."""
         try:
             manifest = masterclasses.load_by_id(ctx, masterclass_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="masterclass not found") from exc
-        audit_key = manifest.artifacts.get("reference/midi_find.json")
-        audit = None
-        if audit_key and storage.exists(audit_key):
-            audit = storage.read_json(audit_key)
         return {
-            "state": manifest.metadata.get("midi_find_state", "not_run"),
-            "error": manifest.metadata.get("midi_find_error"),
-            "updated_at": manifest.metadata.get("midi_find_updated_at"),
+            "state": "deprecated",
+            "error": None,
+            "updated_at": manifest.metadata.get("score_prep_updated_at"),
             "midi_attached": "reference/midi" in manifest.artifacts,
-            "midi_url": manifest.metadata.get("reference_midi_url"),
-            "midi_source": manifest.metadata.get("reference_midi_source"),
-            "midi_attribution": manifest.metadata.get("reference_midi_attribution"),
-            "midi_confidence": manifest.metadata.get("reference_midi_confidence"),
-            "audit": audit,
+            "midi_url": None,
+            "midi_source": None,
+            "midi_attribution": None,
+            "midi_confidence": None,
+            "audit": None,
         }
 
     @app.post("/masterclasses/{masterclass_id}/prepare-score")

@@ -407,6 +407,75 @@ def match_to_score(
 # End-to-end orchestration: write artifacts the technical viewer + future
 # teacher tools consume.
 # ---------------------------------------------------------------------------
+def _build_legacy_hmm_artifacts(
+    *,
+    detected_notes: list[dict[str, Any]],
+    matched_notes: list[dict[str, Any]] | None,
+    method: str,
+    score_source: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Produce HMM-shaped artifacts from audio-truth data so legacy consumers
+    (voicing.py, rhythm.py, intonation.py, score_map.py, agent_tools/*) keep
+    working unchanged while we delete the old HMM pipeline.
+
+    Returns ``(aligned_notes_doc, alignment_doc)`` matching the historical
+    shape of ``analysis/hmm_aligned_notes.json`` and ``analysis/hmm_alignment.json``.
+    """
+    notes_for_shim = matched_notes or detected_notes
+    # bar_starts: for each measure mentioned in the matched notes, the first
+    # performed_time_sec for that measure. Sorted by measure so the legacy
+    # consumers can iterate in order.
+    by_measure: dict[int, float] = {}
+    for n in notes_for_shim:
+        m = n.get("measure")
+        t = n.get("performed_time_sec", n.get("perf_time"))
+        if m is None or t is None:
+            continue
+        if m not in by_measure or t < by_measure[m]:
+            by_measure[m] = float(t)
+    bar_starts = [
+        {
+            "measure": m,
+            "performed_time_sec": round(t, 3),
+            "start": round(t, 3),
+            "first_visited_pitches": [],
+            "is_score_bar_first_state": True,
+            "method": "audio_truth_first_note",
+        }
+        for m, t in sorted(by_measure.items())
+    ]
+    music_start = bar_starts[0]["performed_time_sec"] if bar_starts else (
+        notes_for_shim[0].get("performed_time_sec", 0.0) if notes_for_shim else 0.0
+    )
+    aligned_notes_doc = {
+        "schema_version": 1,
+        "notes": notes_for_shim,
+        "method": f"audio_truth:{method}:{score_source}",
+        "source_compat": "hmm_aligned_notes_v1",
+    }
+    alignment_doc = {
+        "schema_version": 1,
+        "summary": {
+            "method": f"audio_truth:{method}:{score_source}",
+            "music_start_sec": music_start,
+            "n_states": len(notes_for_shim),
+            "note_count": len(notes_for_shim),
+            "tempo_factor_perf_over_midi": 1.0,
+            "method_notes": [
+                "Legacy HMM-shaped artifact synthesized from audio_truth output.",
+                "Underlying transcriber: " + method,
+                "Score-matching source: " + score_source,
+            ],
+        },
+        "bar_starts": bar_starts,
+        "notes": notes_for_shim,
+        "note_alignments": notes_for_shim,
+        "measure_count": len(bar_starts),
+        "source_compat": "hmm_alignment_v1",
+    }
+    return aligned_notes_doc, alignment_doc
+
+
 def run_audio_truth_pipeline(
     *,
     storage: ObjectStorage,
@@ -418,10 +487,15 @@ def run_audio_truth_pipeline(
     Writes:
         analysis/audio_truth_notes.json            - raw transcriber output
         analysis/audio_truth_matched_notes.json    - notes enriched with score
+        analysis/hmm_aligned_notes.json            - legacy-shim for old consumers
+        analysis/hmm_alignment.json                - legacy-shim with bar_starts
 
     The "audio_truth" naming is deliberately model-agnostic so downstream
     consumers don't need to know whether PTI or basic-pitch produced the
-    data. The method name is preserved in the JSON payload.
+    data. The HMM-shaped shim is a transitional output -- once every
+    consumer (voicing, rhythm, intonation, score_map, inspect_bar,
+    inspect_note) is migrated to read audio_truth_matched_notes directly,
+    we delete the shim and the hmm_align module along with it.
     """
     method, notes = transcribe(storage=storage, manifest=manifest)
     raw_key = store.artifact_key(manifest.session, "analysis/audio_truth_notes.json")
@@ -437,9 +511,9 @@ def run_audio_truth_pipeline(
     })
     manifest.artifacts["analysis/audio_truth_notes.json"] = raw_key
 
-    midi_key = manifest.artifacts.get("masterclass/reference/midi")
     matched_count = 0
     score_source, score_notes = _load_score_notes_auto(storage, manifest)
+    enriched: list[dict[str, Any]] | None = None
     if score_notes:
         enriched = match_to_score(notes, score_notes)
         matched_count = sum(1 for n in enriched if n.get("matched"))
@@ -462,6 +536,21 @@ def run_audio_truth_pipeline(
         _LOG.warning("no reference score (MusicXML or MIDI) on lesson %s; skipping score-match step",
                      manifest.session.session_id)
 
+    # Compat shim: write HMM-shaped artifacts so the old consumers keep
+    # working until they are individually migrated to audio_truth_matched.
+    aligned_doc, alignment_doc = _build_legacy_hmm_artifacts(
+        detected_notes=notes,
+        matched_notes=enriched,
+        method=method,
+        score_source=score_source,
+    )
+    aligned_key = store.artifact_key(manifest.session, "analysis/hmm_aligned_notes.json")
+    storage.write_json(aligned_key, aligned_doc)
+    manifest.artifacts["analysis/hmm_aligned_notes.json"] = aligned_key
+    align_key = store.artifact_key(manifest.session, "analysis/hmm_alignment.json")
+    storage.write_json(align_key, alignment_doc)
+    manifest.artifacts["analysis/hmm_alignment.json"] = align_key
+
     store.save(manifest)
     return {
         "method": method,
@@ -469,4 +558,5 @@ def run_audio_truth_pipeline(
         "notes": len(notes),
         "matched": matched_count,
         "has_score_match": bool(score_notes),
+        "legacy_shim_written": True,
     }
