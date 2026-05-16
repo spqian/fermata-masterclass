@@ -27,7 +27,15 @@ def measure_tempo(storage: ObjectStorage, session: SessionRef, args: dict[str, A
     midi_measure = int(args.get("midi_measure", args.get("measure", 1)))
     bar = next((b for b in per_bar if _bar_num(b) == midi_measure), None)
     if not bar:
-        return {"error": f"no bar {midi_measure} duration found"}
+        available = sorted({_bar_num(b) for b in per_bar if _bar_num(b) >= 0})
+        return {
+            "error": f"no per-bar tempo data for measure {midi_measure}",
+            "reason": "audio-truth matching produced no notes inside this measure (likely a rolling chord, fermata, or tacet at the start/end of the played range)",
+            "available_measures": available,
+            "median_bar_duration_sec": median_dur,
+            "overall_player_quarter_bpm_median": summary.get("overall_player_quarter_bpm_median"),
+            "interpretation": "Pick the closest available_measure instead, or use {start_measure, end_measure} with a wider window.",
+        }
     out = _compact_bar(bar, median_dur, summary); out["midi_measure"] = midi_measure
     return out
 

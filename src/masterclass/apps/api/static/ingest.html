@@ -601,14 +601,6 @@
             </label>
           </div>
           <div class="field">
-            <label>Reference recording (MIDI, optional)</label>
-            <label class="file-drop">
-              <span class="ico">M</span>
-              <span class="text">Attach a MIDI<small>optional · we'll search the web for one if you skip</small></span>
-              <input type="file" name="midi_file" accept=".mid,.midi,audio/midi">
-            </label>
-          </div>
-          <div class="field">
             <label for="notes">Notes (optional)</label>
             <textarea id="notes" name="notes" placeholder="Anything the teacher should remember about this piece across all your lessons."></textarea>
           </div>
@@ -748,16 +740,7 @@
       const prepState = prep.state || "not_run";
       const prepLabel = FRIENDLY_REF.score_prep[prepState];
       items.push(refStatusLine(prepState, typeof prepLabel === "function" ? prepLabel(prep) : prepLabel, prep.substage));
-
-      const midiState = midi.state || "not_run";
-      const midiLabel = FRIENDLY_REF.midi_find[midiState];
-      items.push(refStatusLine(midiState, typeof midiLabel === "function" ? midiLabel(midi) : midiLabel));
-
-      const refsActions = [];
-      if (midi.state === "not_found" || midi.state === "failed") {
-        refsActions.push(`<button class="ghost" onclick="rerunMidi('${masterclassId}')">Search again</button>`);
-      }
-      refBox.innerHTML = items.join("") + (refsActions.length ? `<div style="margin-top:10px;display:flex;gap:8px">${refsActions.join("")}</div>` : "");
+      refBox.innerHTML = items.join("");
     }
 
     function refStatusLine(state, label, substage) {
@@ -944,11 +927,31 @@
         </div>
         <div class="actions-row">
           <button type="button" class="ghost" onclick="goto('/class/${masterclassId}')">← Class home</button>
+          <button type="button" id="rerun-btn" class="ghost" onclick="rerunLesson('${masterclassId}','${sessionId}')">↻ Retry</button>
           <a id="open-player" class="primary" style="display:none;text-decoration:none" target="_blank">Open player →</a>
         </div>
       `;
       const handle = pollProcessing(masterclassId, sessionId);
       stopPolling = () => clearTimeout(handle);
+    }
+
+    async function rerunLesson(masterclassId, sessionId) {
+      const btn = document.getElementById("rerun-btn");
+      if (btn) { btn.disabled = true; btn.textContent = "Retrying…"; }
+      try {
+        const r = await fetch(`/lessons/${sessionId}/rerun`, { method: "POST" });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || `Rerun failed (${r.status})`);
+        showToast("Pipeline restarted");
+        // Tear down any prior poll loop so we don't double-poll.
+        if (typeof stopPolling === "function") stopPolling();
+        const handle = pollProcessing(masterclassId, sessionId);
+        stopPolling = () => clearTimeout(handle);
+      } catch (err) {
+        showToast(err.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "↻ Retry"; }
+      }
     }
 
     function pollProcessing(masterclassId, sessionId) {

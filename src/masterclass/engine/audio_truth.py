@@ -344,6 +344,8 @@ def match_to_score(
     *,
     time_window_sec: float = 4.0,
     lag_smoothing: float = 0.85,
+    backward_tolerance_sec: float = 0.5,
+    backward_penalty_sec: float = 6.0,
 ) -> list[dict[str, Any]]:
     """Greedy left-to-right matcher with EMA-tracked perf-vs-score lag.
 
@@ -353,12 +355,22 @@ def match_to_score(
     ``timing_offset_ms``. Unmatched perf notes keep their original data
     but get ``matched=False`` and ``staff_index=None`` so the overlay can
     render them in a neutral colour.
+
+    Monotonicity: when the score has repeated material (the Bach opening's
+    rolling chord shares pitches with later passages, etc.), pure
+    nearest-time matching can alias an early performed note to a *later*
+    score note that's closer to the running lag estimate. We add a soft
+    penalty for candidates whose ``score_time_sec`` precedes the last
+    matched score time by more than ``backward_tolerance_sec`` (chord
+    voices can legitimately arrive slightly out of strict order, so we
+    don't ban backwards matches outright).
     """
     by_pitch: dict[int, list[int]] = {}
     for idx, sn in enumerate(score_notes):
         by_pitch.setdefault(sn["midi_pitch"], []).append(idx)
     score_claimed = [False] * len(score_notes)
     lag_estimate: float | None = None
+    last_matched_score_time: float = -1e9
     out: list[dict[str, Any]] = []
     for pn in perf_notes:
         enriched = dict(pn)
@@ -377,11 +389,15 @@ def match_to_score(
                 continue
             sn = score_notes[cand_idx]
             expected = sn["score_time_sec"] + (lag_estimate or 0.0)
-            dt = abs(perf_time - expected)
-            if dt > time_window_sec:
+            cost = abs(perf_time - expected)
+            if cost > time_window_sec:
                 continue
-            if dt < best_cost:
-                best_cost = dt
+            # Soft monotonicity: discourage jumping backwards in the score.
+            backward = last_matched_score_time - sn["score_time_sec"]
+            if backward > backward_tolerance_sec:
+                cost += backward_penalty_sec
+            if cost < best_cost:
+                best_cost = cost
                 best_idx = cand_idx
         if best_idx is None:
             enriched["matched"] = False
@@ -399,6 +415,11 @@ def match_to_score(
         enriched["timing_offset_ms"] = round((perf_time - m["score_time_sec"]) * 1000.0, 1)
         new_lag = perf_time - m["score_time_sec"]
         lag_estimate = new_lag if lag_estimate is None else (lag_smoothing * lag_estimate + (1 - lag_smoothing) * new_lag)
+        # Only ratchet forward; backwards-tolerated matches don't push the
+        # progress marker so we can still legitimately match a delayed
+        # chord voice to its earlier-in-score position.
+        if m["score_time_sec"] > last_matched_score_time:
+            last_matched_score_time = m["score_time_sec"]
         out.append(enriched)
     return out
 

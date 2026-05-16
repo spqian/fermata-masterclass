@@ -58,8 +58,9 @@ def analyze_intonation(
     if not audio_key:
         raise ValueError("manifest is missing artifacts/audio.wav; run ingestion first")
 
-    from masterclass.engine.aligned_notes import load_aligned_notes
-    aligned_notes = list(load_aligned_notes(storage, manifest))
+    from masterclass.engine.aligned_notes import load_aligned_notes, load_aligned_notes_source
+    notes_key, aligned_notes = load_aligned_notes_source(storage, manifest)
+    aligned_notes = list(aligned_notes)
     if not aligned_notes:
         raise RuntimeError("no aligned notes available for intonation analysis (audio_truth pipeline must run first)")
 

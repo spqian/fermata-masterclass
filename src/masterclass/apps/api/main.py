@@ -992,6 +992,15 @@ def create_app():
 
     _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
+    _MXL_DOCTYPE_RE = re.compile(rb"<!DOCTYPE[^>]*>")
+
+    def _strip_external_dtd(xml_bytes: bytes) -> bytes:
+        """Remove the <!DOCTYPE ...> declaration so browser XML parsers
+        (used by OpenSheetMusicDisplay) don't try to fetch the external
+        MusicXML DTD and reject the document.
+        """
+        return _MXL_DOCTYPE_RE.sub(b"", xml_bytes, count=1)
+
     def _player_html_response(session_id: str) -> HTMLResponse:
         # Strict allowlist: session IDs are uuid4().hex (32 lowercase hex chars).
         # Without this, a crafted path like /lessons/";alert(1);//abc/player would
@@ -1262,6 +1271,67 @@ def create_app():
             html.replace('"__SESSION_ID__"', json.dumps(session_id)),
             headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
+
+    @app.get("/lessons/{session_id}/debug/musicxml")
+    def debug_musicxml(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> Response:
+        """Serve the masterclass's reference MusicXML for this lesson.
+
+        Used by the technical viewer's MusicXML panel (OpenSheetMusicDisplay).
+        Always returns uncompressed XML (text/xml) — if the artifact is
+        .mxl (zipped), we extract the inner score.xml on the fly so the
+        browser-side renderer doesn't have to deal with two formats.
+        """
+        manifest = store.load_by_id(ctx, session_id)
+        masterclass_id = manifest.metadata.get("masterclass_id")
+        if not masterclass_id:
+            raise HTTPException(status_code=404, detail="lesson has no masterclass binding")
+        try:
+            mc = masterclasses.load_by_id(ctx, masterclass_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="masterclass not found") from exc
+
+        for rel in ("reference/musicxml.musicxml", "reference/musicxml", "reference/musicxml.mxl"):
+            key = mc.artifacts.get(rel)
+            if not key or not storage.exists(key):
+                continue
+            raw = storage.read_bytes(key)
+            # .mxl is a ZIP with a META-INF/container.xml pointing at the
+            # main score file (usually score.xml or musicxml.xml).
+            if rel.endswith(".mxl") or raw[:2] == b"PK":
+                import zipfile, io as _io
+                from xml.etree import ElementTree as _ET
+                try:
+                    with zipfile.ZipFile(_io.BytesIO(raw)) as zf:
+                        rootfile = None
+                        if "META-INF/container.xml" in zf.namelist():
+                            container = _ET.fromstring(zf.read("META-INF/container.xml"))
+                            ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
+                            node = container.find(".//c:rootfile", ns) or container.find(".//rootfile")
+                            if node is not None:
+                                rootfile = node.get("full-path")
+                        if not rootfile:
+                            # Heuristic fallback: pick the first .xml that isn't in META-INF/
+                            rootfile = next(
+                                (n for n in zf.namelist() if n.lower().endswith(".xml") and not n.startswith("META-INF/")),
+                                None,
+                            )
+                        if not rootfile:
+                            raise HTTPException(status_code=500, detail=".mxl has no readable score xml")
+                        xml_bytes = zf.read(rootfile)
+                except zipfile.BadZipFile as exc:
+                    raise HTTPException(status_code=500, detail=f"malformed .mxl: {exc}") from exc
+                xml_bytes = _strip_external_dtd(xml_bytes)
+                return Response(
+                    content=xml_bytes,
+                    media_type="application/xml; charset=utf-8",
+                    headers={"Cache-Control": "private, max-age=300"},
+                )
+            return Response(
+                content=_strip_external_dtd(raw),
+                media_type="application/xml; charset=utf-8",
+                headers={"Cache-Control": "private, max-age=300"},
+            )
+        raise HTTPException(status_code=404, detail="no MusicXML artifact for this masterclass")
 
     @app.get("/lessons/{session_id}/debug/comments")
     def debug_comments(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:

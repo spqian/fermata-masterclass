@@ -10,6 +10,7 @@ from masterclass.storage.base import ObjectStorage
 from masterclass.agent_tools.get_frames import DESCRIPTION as GET_FRAMES_DESCRIPTION, GET_FRAMES_SCHEMA, get_frames
 from masterclass.agent_tools.inspect_bar import DESCRIPTION as INSPECT_BAR_DESCRIPTION, INSPECT_BAR_SCHEMA, inspect_bar
 from masterclass.agent_tools.inspect_chord import DESCRIPTION as INSPECT_CHORD_DESCRIPTION, INSPECT_CHORD_SCHEMA, inspect_chord
+from masterclass.agent_tools.inspect_intonation import DESCRIPTION as INSPECT_INTONATION_DESCRIPTION, INSPECT_INTONATION_SCHEMA, inspect_intonation
 from masterclass.agent_tools.inspect_note import DESCRIPTION as INSPECT_NOTE_DESCRIPTION, INSPECT_NOTE_SCHEMA, inspect_note
 from masterclass.agent_tools.inspect_voicing import DESCRIPTION as INSPECT_VOICING_DESCRIPTION, INSPECT_VOICING_SCHEMA, inspect_voicing
 from masterclass.agent_tools.list_frames import DESCRIPTION as LIST_FRAMES_DESCRIPTION, LIST_FRAMES_SCHEMA, list_frames
@@ -61,6 +62,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("list_frames", LIST_FRAMES_DESCRIPTION, LIST_FRAMES_SCHEMA, list_frames),
     ToolSpec("get_frames", GET_FRAMES_DESCRIPTION, GET_FRAMES_SCHEMA, get_frames),
     ToolSpec("inspect_chord", INSPECT_CHORD_DESCRIPTION, INSPECT_CHORD_SCHEMA, inspect_chord),
+    ToolSpec("inspect_intonation", INSPECT_INTONATION_DESCRIPTION, INSPECT_INTONATION_SCHEMA, inspect_intonation),
     ToolSpec("measure_vibrato", MEASURE_VIBRATO_DESCRIPTION, MEASURE_VIBRATO_SCHEMA, measure_vibrato),
     ToolSpec("inspect_note", INSPECT_NOTE_DESCRIPTION, INSPECT_NOTE_SCHEMA, inspect_note),
     ToolSpec("inspect_bar", INSPECT_BAR_DESCRIPTION, INSPECT_BAR_SCHEMA, inspect_bar),
@@ -72,7 +74,7 @@ ALL_TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("inspect_voicing", INSPECT_VOICING_DESCRIPTION, INSPECT_VOICING_SCHEMA, inspect_voicing),
 )
 
-INTONATION_RELATED_TOOLS = {"measure_vibrato"}
+INTONATION_RELATED_TOOLS = {"measure_vibrato", "inspect_intonation"}
 PIANO_ONLY_TOOLS = {"inspect_voicing"}
 
 

@@ -123,6 +123,7 @@ def build_enrichment_prompt(
     out.append("- For a single odd note: `inspect_note` with `midi_measure` + `pitch`.")
     out.append("- For phrase shape or balance: `measure_dynamics` to support dynamics/voicing claims.")
     out.append("- For tempo/rubato claims: `measure_tempo` to support structural timing statements.")
+    out.append("- **For any intonation claim (this note was sharp/flat by N cents): you MUST call `inspect_intonation` at the cited note's performed time with its expected pitch BEFORE writing the comment. The polyphonic_intonation summary is a pitch-class aggregate and can be skewed by a single buzzy sustained note — it is NOT evidence for a per-note claim.** Call `inspect_intonation` for each note you name in an intonation comment; if the returned `cents_off_score` is within +/- 15c, the note is in tune and you must not claim otherwise.")
     out.append("")
     out.append("### Important: do not invent measurements")
     out.append("")

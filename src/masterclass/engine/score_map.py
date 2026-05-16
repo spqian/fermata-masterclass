@@ -72,10 +72,20 @@ def build_score_map(
         raise ValueError("masterclass is missing reference/score_prep.json")
     score_prep = storage.read_json(score_prep_key) or {}
 
-    midi_key = _find_midi_key(storage, masterclass, manifest)
-    if not midi_key:
-        raise ValueError("masterclass/session is missing reference MIDI")
-    midi_bytes = storage.read_bytes(midi_key)
+    # Score-note source: parse MusicXML directly (audio-truth has the
+    # canonical loader). MIDI was retired with the audio-truth migration -
+    # masterclasses created from PDF+OMR never have a reference/midi
+    # artifact and synthesizing one round-tripped pitch quantization
+    # errors we can avoid by reading MusicXML once.
+    from masterclass.engine.audio_truth import _load_score_notes_from_musicxml
+    xml_key = _find_musicxml_key(storage, masterclass, manifest)
+    if not xml_key:
+        raise ValueError(
+            "masterclass is missing reference MusicXML; score_prep must run first"
+        )
+    score_notes = _load_score_notes_from_musicxml(storage.read_bytes(xml_key))
+    if not score_notes:
+        raise ValueError(f"MusicXML at {xml_key} parsed to zero notes")
 
     hinted_movement_id = _as_int(
         manifest.metadata.get("played_movement_id"),
@@ -112,7 +122,7 @@ def build_score_map(
     )
     bars = _build_bars(layout_systems, systems, played_lo=played_lo, played_hi=played_hi, config=config)
     notes = _build_notes(
-        midi_bytes=midi_bytes,
+        score_notes=score_notes,
         bars=bars,
         played_lo=played_lo,
         played_hi=played_hi,
@@ -120,7 +130,7 @@ def build_score_map(
         hmm_notes=_load_hmm_notes(storage, manifest),
         config=config,
     )
-    total_measures = total_measures or _midi_measure_count(midi_bytes)
+    total_measures = total_measures or max((int(n.get("measure") or 0) for n in score_notes), default=0) or len(notes)
 
     score_map = {
         "schema_version": 1,
@@ -146,7 +156,7 @@ def build_score_map(
         "_meta": {
             "generated_at": datetime.now(UTC).isoformat(),
             "score_prep_key": score_prep_key,
-            "midi_key": midi_key,
+            "score_source_key": xml_key,
             "config": asdict(config),
         },
     }
@@ -222,6 +232,28 @@ def _find_midi_key(storage: ObjectStorage, masterclass: MasterclassManifest, man
     for key in candidates:
         if key and storage.exists(key):
             return key
+    return None
+
+
+def _find_musicxml_key(storage: ObjectStorage, masterclass: MasterclassManifest, manifest: SessionManifest) -> str | None:
+    """Locate the MusicXML reference. Same lookup pattern as audio_truth uses."""
+    for key_name in (
+        "reference/musicxml.musicxml",
+        "reference/musicxml.mxl",
+        "reference/musicxml",
+    ):
+        for source in (masterclass, manifest):
+            prefix = "masterclass/" if source is manifest else ""
+            key = _artifact(source, f"{prefix}{key_name}")
+            if key and storage.exists(key):
+                return key
+    return None
+
+
+def _load_or_synthesize_midi(*args, **kwargs) -> bytes | None:
+    """Deprecated. score_map now reads MusicXML directly via
+    audio_truth._load_score_notes_from_musicxml. Retained as a stub in
+    case external callers import the symbol."""
     return None
 
 
@@ -516,7 +548,7 @@ def _relative_highlight(system_bbox: Any, x0: float, x1: float) -> list[float]:
 
 def _build_notes(
     *,
-    midi_bytes: bytes,
+    score_notes: list[dict[str, Any]],
     bars: list[dict[str, Any]],
     played_lo: int,
     played_hi: int,
@@ -524,36 +556,56 @@ def _build_notes(
     hmm_notes: list[dict[str, Any]],
     config: ScoreMapConfig,
 ) -> list[dict[str, Any]]:
-    import pretty_midi
+    """Build per-note score-map rows from a list of normalized score notes.
 
-    midi = pretty_midi.PrettyMIDI(io.BytesIO(midi_bytes))
-    downbeats = list(map(float, midi.get_downbeats()))
-    if not downbeats:
-        raise RuntimeError("MIDI has no detectable measure structure")
-    midi_notes = []
-    for inst in midi.instruments:
-        for note in inst.notes:
-            midi_notes.append(
-                {
-                    "start": float(note.start),
-                    "end": float(note.end),
-                    "pitch": int(note.pitch),
-                    "name": pretty_midi.note_number_to_name(int(note.pitch)),
-                    "velocity": int(note.velocity),
-                }
-            )
-    midi_notes.sort(key=lambda row: (float(row["start"]), -int(row["pitch"])))
+    Each ``score_notes`` row has the shape produced by
+    ``audio_truth._load_score_notes_from_musicxml``: at minimum
+    ``score_time_sec``, ``midi_pitch``, ``measure``, plus optional
+    ``duration_sec`` / ``track_name`` / ``staff_index``.
+
+    Previously this function parsed pretty_midi and derived measure from
+    ``midi.get_downbeats()``. We now trust the MusicXML ``measure`` field
+    directly (already the source of truth in audio-truth's matcher) and
+    derive downbeat times as the min score_time per measure.
+    """
+    import pretty_midi  # only for note_number_to_name; no MIDI parsing
+
+    if not score_notes:
+        raise RuntimeError("score has no notes (MusicXML parse returned empty)")
+
+    notes_by_measure: dict[int, list[dict[str, Any]]] = {}
+    for n in score_notes:
+        m = int(n.get("measure") or 0)
+        if m <= 0:
+            continue
+        notes_by_measure.setdefault(m, []).append(n)
+
+    # Derive downbeats: first score_time per measure, in measure order.
+    downbeats: list[float] = []
+    measure_order: list[int] = sorted(notes_by_measure)
+    for m in measure_order:
+        downbeats.append(min(float(n["score_time_sec"]) for n in notes_by_measure[m]))
+    # End-of-piece sentinel (next-measure boundary) for last-measure bar_dur.
+    score_end = max(
+        float(n.get("score_time_sec", 0.0)) + float(n.get("duration_sec", 0.0) or 0.0)
+        for n in score_notes
+    )
 
     events_by_score_time: dict[float, list[dict[str, Any]]] = {}
-    for note in midi_notes:
-        key = round(float(note["start"]), config.chord_time_round_digits)
-        events_by_score_time.setdefault(key, []).append(note)
+    for note in score_notes:
+        key = round(float(note["score_time_sec"]), config.chord_time_round_digits)
+        events_by_score_time.setdefault(key, []).append({
+            "start": float(note["score_time_sec"]),
+            "pitch": int(note["midi_pitch"]),
+            "name": pretty_midi.note_number_to_name(int(note["midi_pitch"])),
+            "measure": int(note.get("measure") or 0),
+        })
 
     hmm_lookup, hmm_conf, hmm_dwell = _hmm_lookups(hmm_notes, config=config)
     bar_by_measure = {int(bar["midi_measure"]): bar for bar in bars}
     events_by_measure: dict[int, list[float]] = {}
-    for score_time in sorted(events_by_score_time):
-        measure = max(1, bisect.bisect_right(downbeats, score_time))
+    for score_time, evs in events_by_score_time.items():
+        measure = int(evs[0]["measure"]) if evs and evs[0].get("measure") else 1
         if played_lo <= measure <= played_hi:
             events_by_measure.setdefault(measure, []).append(score_time)
 
@@ -562,12 +614,19 @@ def _build_notes(
         bar = bar_by_measure.get(measure)
         if not bar:
             continue
-        event_times = events_by_measure[measure]
+        event_times = sorted(events_by_measure[measure])
         n_events = max(1, len(event_times))
         x0, x1 = bar.get("highlight_x_frac", [0.0, 1.0])
         bar_width = float(x1) - float(x0)
-        db_start = downbeats[measure - 1] if measure - 1 < len(downbeats) else event_times[0]
-        db_end = downbeats[measure] if measure < len(downbeats) else midi.get_end_time()
+        # downbeats list is indexed by position-in-played-order; map by
+        # measure number via measure_order.
+        try:
+            mi = measure_order.index(measure)
+            db_start = downbeats[mi]
+            db_end = downbeats[mi + 1] if mi + 1 < len(downbeats) else score_end
+        except ValueError:
+            db_start = event_times[0]
+            db_end = score_end
         bar_dur = max(1e-6, float(db_end) - float(db_start))
         for index, score_time in enumerate(event_times):
             notes_at = events_by_score_time[score_time]
@@ -630,12 +689,9 @@ def _hmm_lookups(
     return perf, conf, dwell
 
 
-def _midi_measure_count(midi_bytes: bytes) -> int:
-    import pretty_midi
-
-    midi = pretty_midi.PrettyMIDI(io.BytesIO(midi_bytes))
-    downbeats = midi.get_downbeats()
-    return max(1, len(downbeats))
+def _midi_measure_count(*args, **kwargs) -> int:
+    """Deprecated: score_map derives total_measures from MusicXML notes."""
+    return 0
 
 
 def _has_hmm_times(notes: list[dict[str, Any]]) -> bool:

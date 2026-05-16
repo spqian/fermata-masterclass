@@ -151,8 +151,8 @@ def analyze_rhythm(
         "repertoire": manifest.repertoire,
         "movement": manifest.movement,
         "method": "score_aware_polyphonic_rhythm_hmm",
-        "source_alignment": align_key,
-        "source_notes": notes_key,
+        "source_alignment": manifest.artifacts.get("analysis/audio_truth_matched_notes.json"),
+        "source_notes": manifest.artifacts.get("analysis/audio_truth_matched_notes.json") or manifest.artifacts.get("analysis/audio_truth_notes.json"),
         "source_rich_onsets": manifest.artifacts.get("analysis/rich_onsets.json") if rich_onsets else None,
         "music_start_sec": round(float(music_start_sec), 3),
         "midi_quarter_bpm_render": round(float(config.midi_quarter_bpm), 2),
@@ -231,7 +231,7 @@ def persist_rhythm(
 def _normalized_notes(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     notes: list[dict[str, Any]] = []
     for row in raw:
-        score_t = _as_float(row.get("score_time_in_movement", row.get("score_time_local")), default=None)
+        score_t = _as_float(row.get("score_time_in_movement", row.get("score_time_local", row.get("score_time_sec"))), default=None)
         perf_t = _as_float(row.get("performed_time_sec", row.get("perf_time")), default=None)
         if score_t is None or perf_t is None:
             continue

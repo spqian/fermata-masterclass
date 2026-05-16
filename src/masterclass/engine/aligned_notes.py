@@ -55,6 +55,31 @@ _CANDIDATE_KEYS: tuple[str, ...] = (
 )
 
 
+def _enrich_for_legacy_consumers(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add legacy field aliases consumers (rhythm, intonation, inspect_*) read.
+
+    The audio-truth schema uses ``score_time_sec`` / ``score_midi_pitch``,
+    while the old HMM code used ``score_time_in_movement`` / ``expected_pitch``.
+    Rather than touch every reader, normalise here so every consumer sees
+    both names. Idempotent — if both names already exist we keep the values.
+    """
+    out: list[dict[str, Any]] = []
+    for n in notes:
+        if not isinstance(n, dict):
+            continue
+        enriched = dict(n)
+        st = enriched.get("score_time_sec")
+        if st is not None:
+            enriched.setdefault("score_time_in_movement", float(st))
+            enriched.setdefault("score_time_local", float(st))
+        sp = enriched.get("score_midi_pitch")
+        if sp is not None:
+            enriched.setdefault("expected_pitch", int(sp))
+        enriched.setdefault("perf_time", enriched.get("performed_time_sec"))
+        out.append(enriched)
+    return out
+
+
 def load_aligned_notes(storage: ObjectStorage, manifest: SessionManifest) -> list[dict[str, Any]]:
     """Return the canonical per-note list for this lesson.
 
@@ -70,10 +95,10 @@ def load_aligned_notes(storage: ObjectStorage, manifest: SessionManifest) -> lis
         except (FileNotFoundError, ValueError, TypeError):
             continue
         if isinstance(doc, list):
-            return [n for n in doc if isinstance(n, dict)]
+            return _enrich_for_legacy_consumers([n for n in doc if isinstance(n, dict)])
         notes = doc.get("notes") if isinstance(doc, dict) else None
         if isinstance(notes, list):
-            return [n for n in notes if isinstance(n, dict)]
+            return _enrich_for_legacy_consumers([n for n in notes if isinstance(n, dict)])
     return []
 
 
@@ -91,10 +116,10 @@ def load_aligned_notes_source(storage: ObjectStorage, manifest: SessionManifest)
         except (FileNotFoundError, ValueError, TypeError):
             continue
         if isinstance(doc, list):
-            return key_name, [n for n in doc if isinstance(n, dict)]
+            return key_name, _enrich_for_legacy_consumers([n for n in doc if isinstance(n, dict)])
         notes = doc.get("notes") if isinstance(doc, dict) else None
         if isinstance(notes, list):
-            return key_name, [n for n in notes if isinstance(n, dict)]
+            return key_name, _enrich_for_legacy_consumers([n for n in notes if isinstance(n, dict)])
     return "", []
 
 

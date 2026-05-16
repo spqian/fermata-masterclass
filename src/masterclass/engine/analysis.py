@@ -349,6 +349,47 @@ def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manife
             lines.append(
                 f"- `{r['start_sec']:.3f}s` {r['detected_note']}{score_part}{cents_part}{timing_part}{measure_part}{staff_part} dur={r['duration_sec']:.2f}s conf={r['confidence']}"
             )
+    # Per-measure score outline. Without this the teacher hallucinates
+    # pitches that aren't in the piece (e.g. "the G# in measure 7" when
+    # measure 7 has only G-natural). Read MusicXML directly because
+    # evidence_packet runs before score_map in the pipeline.
+    try:
+        from masterclass.engine.audio_truth import _load_score_notes_from_musicxml
+        xml_key = None
+        for k in ("masterclass/reference/musicxml.musicxml", "masterclass/reference/musicxml.mxl", "masterclass/reference/musicxml"):
+            if k in manifest.artifacts and storage.exists(manifest.artifacts[k]):
+                xml_key = manifest.artifacts[k]
+                break
+        sm_notes = _load_score_notes_from_musicxml(storage.read_bytes(xml_key)) if xml_key else []
+    except Exception:
+        sm_notes = []
+    if sm_notes:
+        import pretty_midi as _pm
+        by_measure: dict[int, list[tuple[float, str]]] = {}
+        for n in sm_notes:
+            m = n.get("measure")
+            if not m:
+                continue
+            name = _pm.note_number_to_name(int(n["midi_pitch"]))
+            by_measure.setdefault(int(m), []).append((float(n["score_time_sec"]), name))
+        if by_measure:
+            lines.extend([
+                "",
+                "## Score pitches per measure (authoritative)",
+                "",
+                "This list IS the score. If a measure does NOT contain a pitch you want to discuss, that pitch is NOT in the score — do not claim it is. Cross-check every named pitch (especially accidentals like G#, C#, F#) against this list before writing a comment. Pitches are listed in score-time order.",
+                "",
+            ])
+            for m in sorted(by_measure):
+                rows = sorted(by_measure[m])
+                # de-dup consecutive identical names (chord groups can repeat)
+                seen: list[str] = []
+                for _t, nm in rows:
+                    if not seen or seen[-1] != nm:
+                        seen.append(nm)
+                cells = seen[:32]
+                more = f" (+{len(seen) - 32} more)" if len(seen) > 32 else ""
+                lines.append(f"- m.{m}: {', '.join(cells)}{more}")
     if "analysis/piano_voicing.json" in manifest.artifacts:
         voicing = storage.read_json(manifest.artifacts["analysis/piano_voicing.json"])
         global_summary = voicing.get("summary", {}).get("global", {})

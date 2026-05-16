@@ -245,7 +245,21 @@
           </div>
         </div>
 
-        <!-- 4. Watch clips Gemini saw -->
+        <!-- 4. MusicXML / OMR result -->
+        <div class="panel-card collapsed" id="panel-musicxml">
+          <div class="panel-head" data-toggle="panel-musicxml">
+            <h2>OMR'd score (MusicXML)</h2>
+            <span class="badge" id="musicxml-badge">click to load</span>
+            <span class="chev"></span>
+          </div>
+          <div class="panel-body" id="musicxml-body">
+            <div class="placeholder">Renders the masterclass's MusicXML so you can sanity-check what the OMR produced vs. the actual PDF score. This is the same source the audio-truth matcher uses.</div>
+            <div id="musicxml-render" style="background:#fff;color:#000;padding:14px;border-radius:4px;margin-top:10px;max-height:70vh;overflow:auto;display:none;"></div>
+            <div id="musicxml-error" style="display:none;color:var(--danger);font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:8px;"></div>
+          </div>
+        </div>
+
+        <!-- 5. Watch clips Gemini saw -->
         <div class="panel-card collapsed" id="panel-clips">
           <div class="panel-head" data-toggle="panel-clips">
             <h2>Watch clips sent to Gemini</h2>
@@ -287,8 +301,70 @@
   document.getElementById("subtitle").textContent = `session=${SESSION_ID}`;
 
   document.querySelectorAll(".panel-head").forEach(h => {
-    h.addEventListener("click", () => document.getElementById(h.dataset.toggle).classList.toggle("collapsed"));
+    h.addEventListener("click", () => {
+      const panel = document.getElementById(h.dataset.toggle);
+      panel.classList.toggle("collapsed");
+      if (h.dataset.toggle === "panel-musicxml" && !panel.classList.contains("collapsed")) {
+        loadMusicXML();
+      }
+    });
   });
+
+  // ---------- MusicXML / OSMD render ----------
+  // OpenSheetMusicDisplay parses MusicXML and renders SVG sheet music in
+  // the browser. We load it lazily (CDN) the first time the user opens the
+  // panel so we don't pay the ~600KB cost for sessions where nobody clicks.
+  let osmdLoadingPromise = null;
+  function ensureOSMD() {
+    if (window.opensheetmusicdisplay) return Promise.resolve();
+    if (osmdLoadingPromise) return osmdLoadingPromise;
+    osmdLoadingPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.7/build/opensheetmusicdisplay.min.js";
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("Failed to load OpenSheetMusicDisplay from CDN"));
+      document.head.appendChild(s);
+    });
+    return osmdLoadingPromise;
+  }
+  let musicXMLLoaded = false;
+  async function loadMusicXML() {
+    if (musicXMLLoaded) return;
+    const badge = document.getElementById("musicxml-badge");
+    const render = document.getElementById("musicxml-render");
+    const errBox = document.getElementById("musicxml-error");
+    badge.textContent = "loading…";
+    errBox.style.display = "none";
+    try {
+      await ensureOSMD();
+      const r = await fetch(`/lessons/${encodeURIComponent(SESSION_ID)}/debug/musicxml`);
+      if (!r.ok) throw new Error(`MusicXML fetch failed: ${r.status}`);
+      const payload = await r.text();
+      render.style.display = "block";
+      render.innerHTML = "";
+      const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(render, {
+        autoResize: true,
+        backend: "svg",
+        drawTitle: true,
+        drawComposer: true,
+        drawCredits: false,
+        followCursor: false,
+      });
+      await osmd.load(payload);
+      osmd.render();
+      badge.textContent = "rendered";
+      musicXMLLoaded = true;
+    } catch (err) {
+      badge.textContent = "error";
+      errBox.style.display = "block";
+      // OSMD sometimes throws a plain object ({ key, message, ... }) instead
+      // of an Error, so produce a useful string in either case.
+      const msg = err && err.message ? err.message
+        : (typeof err === "string" ? err
+        : (err && typeof err === "object" ? JSON.stringify(err) : String(err)));
+      errBox.textContent = msg;
+    }
+  }
 
   async function api(url, opts = {}) {
     const r = await fetch(url, opts);
