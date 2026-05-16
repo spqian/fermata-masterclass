@@ -88,6 +88,14 @@
     .spec-crosshair { position:absolute; pointer-events:none; background:rgba(201,169,106,.55); display:none; z-index:25; }
     .spec-crosshair.h { height:1px; width:100%; left:0; }
     .spec-crosshair.v { width:1px; height:100%; top:0; }
+    /* Audio playhead: red-orange, taller and brighter than the hover crosshair
+       so the two can coexist without visual confusion. */
+    .spec-playhead { position:absolute; pointer-events:none; width:2px;
+      background:#e07a5f; box-shadow:0 0 8px rgba(224,122,95,.85);
+      display:none; z-index:27; }
+    .spec-playhead::after { content:""; position:absolute; left:-4px; top:-4px;
+      width:10px; height:10px; border-radius:50%; background:#e07a5f;
+      box-shadow:0 0 6px rgba(224,122,95,.85); }
     .placeholder { color:var(--ink-mute); font-style:italic; padding:14px 0; }
     .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:12px; color:var(--ink-soft); }
     .toolbar input[type=number] { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.1); color:var(--ink); padding:5px 8px; border-radius:3px; width:80px; font-family:"JetBrains Mono",monospace; }
@@ -164,6 +172,7 @@
               <img class="spec-img" id="spec-img" alt="spectrogram (select a comment or press Render)">
               <div class="spec-crosshair h" id="spec-hline"></div>
               <div class="spec-crosshair v" id="spec-vline"></div>
+              <div class="spec-playhead" id="spec-playhead"></div>
               <div class="spec-tooltip" id="spec-tooltip"></div>
             </div>
           </div>
@@ -392,16 +401,55 @@
   }
 
   let activeAudio = null;
+  let playheadRAF = null;
+  function startPlayheadLoop() {
+    if (playheadRAF) cancelAnimationFrame(playheadRAF);
+    const img = document.getElementById("spec-img");
+    const playhead = document.getElementById("spec-playhead");
+    function tick() {
+      // Stop when audio is gone or paused; clear the bar.
+      if (!activeAudio || activeAudio.paused || activeAudio.ended) {
+        playhead.style.display = "none";
+        playheadRAF = null;
+        return;
+      }
+      // No rendered spectrogram yet -> just keep ticking.
+      if (!lastSpec) { playheadRAF = requestAnimationFrame(tick); return; }
+      const rect = img.getBoundingClientRect();
+      const t = activeAudio.currentTime;
+      // Hide when the playhead drifts outside the current spectrogram window.
+      if (t < lastSpec.startSec || t > lastSpec.endSec || rect.width === 0) {
+        playhead.style.display = "none";
+      } else {
+        const w = rect.width, h = rect.height;
+        const plotLeft = w * SPEC_PLOT.left;
+        const plotRight = w * SPEC_PLOT.right;
+        const plotTop = h * (1 - SPEC_PLOT.top);
+        const plotBottom = h * (1 - SPEC_PLOT.bottom);
+        const xFrac = (t - lastSpec.startSec) / (lastSpec.endSec - lastSpec.startSec);
+        const x = plotLeft + xFrac * (plotRight - plotLeft);
+        playhead.style.display = "block";
+        playhead.style.left = `${x}px`;
+        playhead.style.top = `${plotTop}px`;
+        playhead.style.height = `${plotBottom - plotTop}px`;
+      }
+      playheadRAF = requestAnimationFrame(tick);
+    }
+    tick();
+  }
+
   function playClip(start, end) {
     if (activeAudio) { activeAudio.pause(); activeAudio = null; }
     const audio = new Audio(`/lessons/${SESSION_ID}/video`);
     audio.currentTime = start;
     activeAudio = audio;
     audio.play().catch(err => console.warn("playback failed", err));
+    startPlayheadLoop();
     const stopAt = setInterval(() => {
       if (audio.currentTime >= end) { audio.pause(); clearInterval(stopAt); }
     }, 50);
     audio.addEventListener("pause", () => clearInterval(stopAt));
+    audio.addEventListener("ended", () => clearInterval(stopAt));
   }
 
   async function renderSpectrogram(start, end) {
