@@ -425,8 +425,18 @@
     if (audio.readyState >= 1) seek(); else audio.addEventListener("loadedmetadata", seek, { once: true });
 
     audio.addEventListener("play", () => startPlayheadLoop());
-    audio.addEventListener("pause", () => { if (rangeStopHandle) { clearInterval(rangeStopHandle); rangeStopHandle = null; } });
-    audio.addEventListener("ended", () => { if (rangeStopHandle) { clearInterval(rangeStopHandle); rangeStopHandle = null; } });
+    // Render once on pause/seek/metadata-load so the bar stays pinned at the
+    // current time instead of vanishing the instant playback stops.
+    audio.addEventListener("pause", () => {
+      if (rangeStopHandle) { clearInterval(rangeStopHandle); rangeStopHandle = null; }
+      renderPlayheadOnce();
+    });
+    audio.addEventListener("ended", () => {
+      if (rangeStopHandle) { clearInterval(rangeStopHandle); rangeStopHandle = null; }
+      renderPlayheadOnce();
+    });
+    audio.addEventListener("seeked", () => renderPlayheadOnce());
+    audio.addEventListener("loadedmetadata", () => renderPlayheadOnce());
 
     document.getElementById("play-comment-range").onclick = () => {
       rangeStopAt = rangeEnd;
@@ -462,38 +472,44 @@
 
   let activeAudio = null;
   let playheadRAF = null;
-  function startPlayheadLoop() {
-    if (playheadRAF) cancelAnimationFrame(playheadRAF);
+  function renderPlayheadOnce() {
     const img = document.getElementById("spec-img");
     const playhead = document.getElementById("spec-playhead");
+    if (!playhead || !img) return;
+    if (!activeAudio || !lastSpec) {
+      playhead.style.display = "none";
+      return;
+    }
+    const rect = img.getBoundingClientRect();
+    const t = activeAudio.currentTime;
+    if (t < lastSpec.startSec || t > lastSpec.endSec || rect.width === 0) {
+      playhead.style.display = "none";
+      return;
+    }
+    const w = rect.width, h = rect.height;
+    const plotLeft = w * SPEC_PLOT.left;
+    const plotRight = w * SPEC_PLOT.right;
+    const plotTop = h * (1 - SPEC_PLOT.top);
+    const plotBottom = h * (1 - SPEC_PLOT.bottom);
+    const xFrac = (t - lastSpec.startSec) / (lastSpec.endSec - lastSpec.startSec);
+    const x = plotLeft + xFrac * (plotRight - plotLeft);
+    playhead.style.display = "block";
+    playhead.style.left = `${x}px`;
+    playhead.style.top = `${plotTop}px`;
+    playhead.style.height = `${plotBottom - plotTop}px`;
+  }
+  function startPlayheadLoop() {
+    if (playheadRAF) cancelAnimationFrame(playheadRAF);
     function tick() {
-      // Stop when audio is gone or paused; clear the bar.
-      if (!activeAudio || activeAudio.paused || activeAudio.ended) {
-        playhead.style.display = "none";
-        playheadRAF = null;
-        return;
-      }
-      // No rendered spectrogram yet -> just keep ticking.
-      if (!lastSpec) { playheadRAF = requestAnimationFrame(tick); return; }
-      const rect = img.getBoundingClientRect();
-      const t = activeAudio.currentTime;
-      // Hide when the playhead drifts outside the current spectrogram window.
-      if (t < lastSpec.startSec || t > lastSpec.endSec || rect.width === 0) {
-        playhead.style.display = "none";
+      renderPlayheadOnce();
+      // rAF only while actually playing -- saves CPU when paused, while the
+      // bar still stays pinned to the last-known position because pause/seek
+      // events call renderPlayheadOnce() directly.
+      if (activeAudio && !activeAudio.paused && !activeAudio.ended) {
+        playheadRAF = requestAnimationFrame(tick);
       } else {
-        const w = rect.width, h = rect.height;
-        const plotLeft = w * SPEC_PLOT.left;
-        const plotRight = w * SPEC_PLOT.right;
-        const plotTop = h * (1 - SPEC_PLOT.top);
-        const plotBottom = h * (1 - SPEC_PLOT.bottom);
-        const xFrac = (t - lastSpec.startSec) / (lastSpec.endSec - lastSpec.startSec);
-        const x = plotLeft + xFrac * (plotRight - plotLeft);
-        playhead.style.display = "block";
-        playhead.style.left = `${x}px`;
-        playhead.style.top = `${plotTop}px`;
-        playhead.style.height = `${plotBottom - plotTop}px`;
+        playheadRAF = null;
       }
-      playheadRAF = requestAnimationFrame(tick);
     }
     tick();
   }
@@ -513,6 +529,9 @@
       img.addEventListener("load", () => {
         lastSpec = { startSec: start, endSec: end, naturalW: img.naturalWidth, naturalH: img.naturalHeight };
         bindSpectrogramHover();
+        // Spectrogram window changed -> reposition the playhead (or hide it
+        // if the audio's current time is outside the new window).
+        renderPlayheadOnce();
       }, { once: true });
       status.textContent = `rendered ${start.toFixed(2)}s → ${end.toFixed(2)}s — hover for note + freq`;
     } catch (e) {
