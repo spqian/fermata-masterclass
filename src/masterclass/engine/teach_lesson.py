@@ -45,7 +45,7 @@ TEACH_RESPONSE_SCHEMA = {
         "comments": {"type": "array"},
         "progress_notes": {"type": "string"},
     },
-    "required": ["summary", "lesson", "comments", "progress_notes", "measure_timestamps"],
+    "required": ["summary", "lesson", "comments", "progress_notes"],
 }
 
 
@@ -142,7 +142,19 @@ def teach_lesson(
         raise
 
     comments = _normalize_comments(result.get("comments") or [])
-    measure_timestamps = _normalize_measure_timestamps(result.get("measure_timestamps") or [])
+    comments = _resolve_comment_timestamps(comments, score_map)
+
+    # Engine-derived measure timestamps from score_map (real performed times)
+    measure_timestamps: list[dict[str, Any]] = []
+    if score_map:
+        from masterclass.engine.aligned_notes import load_measure_starts
+        try:
+            measure_timestamps = load_measure_starts(storage, manifest)
+        except Exception:
+            pass
+    # Fallback to Gemini's if engine has none
+    if not measure_timestamps:
+        measure_timestamps = _normalize_measure_timestamps(result.get("measure_timestamps") or [])
     summary = str(result.get("summary") or result.get("enrichment_notes") or "").strip()
     progress_notes = str(result.get("progress_notes") or "").strip()
     turns = _turn_count(tool_calls)
@@ -468,7 +480,7 @@ def _extract_json_block(text: str) -> dict[str, Any] | None:
 
 
 def _validate_teach_response(result: dict[str, Any]) -> None:
-    missing = [field for field in ("lesson", "comments", "progress_notes", "measure_timestamps") if field not in result]
+    missing = [field for field in ("lesson", "comments", "progress_notes") if field not in result]
     if missing:
         raise ValueError(f"teacher JSON missing required fields: {', '.join(missing)}")
     if not isinstance(result.get("lesson"), dict):
@@ -505,6 +517,47 @@ def _normalize_comments(raw: list[Any]) -> list[dict[str, Any]]:
         })
     out.sort(key=lambda c: c["start"])
     return out
+
+
+def _resolve_comment_timestamps(
+    comments: list[dict[str, Any]],
+    score_map: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Replace Gemini-guessed start/end with real performed times from score_map.
+
+    For each comment, look up measure+beat in score_map["notes"] to find
+    the real perf_time.  If Gemini provided start/end and we can't resolve,
+    keep Gemini's values as fallback.
+    """
+    if not score_map:
+        return comments
+    notes = score_map.get("notes") or []
+    # Build lookup: (measure, rounded_beat) -> perf_time
+    perf_by_loc: dict[tuple[int, float], float] = {}
+    for n in notes:
+        m = n.get("midi_measure") or n.get("measure")
+        b = n.get("beat_in_bar")
+        pt = n.get("perf_time")
+        if m is not None and b is not None and pt is not None:
+            perf_by_loc[(int(m), round(float(b), 2))] = float(pt)
+
+    for c in comments:
+        measure = c.get("measure")
+        if measure is None:
+            continue
+        # Try exact match first
+        key = (int(measure), round(float(c.get("beat") or 1.0), 2))
+        resolved = perf_by_loc.get(key)
+        if resolved is None:
+            # Fallback: any note in this measure, take earliest
+            bar_times = [v for (m, _), v in perf_by_loc.items() if m == int(measure)]
+            resolved = min(bar_times) if bar_times else None
+        if resolved is not None:
+            c["start"] = round(resolved, 3)
+            # end = start of next measure or start + 2s
+            next_bar_times = [v for (m, _), v in perf_by_loc.items() if m == int(measure) + 1]
+            c["end"] = round(min(next_bar_times) if next_bar_times else resolved + 2.0, 3)
+    return comments
 
 
 def _normalize_references(raw: Any) -> list[dict[str, Any]]:
