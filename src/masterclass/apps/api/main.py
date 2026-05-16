@@ -17,6 +17,7 @@ from masterclass.auth.google_oauth import (
     set_session_cookie,
     OAUTH_COOKIE_NAME,
 )
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.jobs import JobStore, QueuedJobType
 from masterclass.core.chat_models import delete_conversation, list_conversations, load_conversation
 from masterclass.core.masterclasses import MasterclassStore
@@ -352,7 +353,7 @@ def create_app():
 
                 manifest.metadata["teach_state"] = "running"
                 store.save(manifest)
-                audio_key = manifest.artifacts.get("artifacts/audio.wav")
+                audio_key = ArtifactCatalog(manifest).audio_wav()
                 if not audio_key:
                     raise RuntimeError("audio missing after extract_media")
                 compact_audio = _downsample_audio_for_teach(ffmpeg, audio_key)

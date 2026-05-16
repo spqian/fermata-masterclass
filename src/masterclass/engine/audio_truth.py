@@ -31,6 +31,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.models import SessionManifest
 from masterclass.core.sessions import SessionStore
 from masterclass.storage.base import ObjectStorage
@@ -300,10 +301,10 @@ def _load_score_notes_auto(storage: ObjectStorage, manifest: SessionManifest) ->
     truth simplification roadmap moves us off MIDI entirely. Old lessons
     that only have the Gemini-found MIDI keep working via the fallback.
     """
-    for key_name in ("masterclass/reference/musicxml.musicxml", "masterclass/reference/musicxml.mxl"):
-        key = manifest.artifacts.get(key_name)
-        if key and storage.exists(key):
-            return "musicxml", _load_score_notes_from_musicxml(storage.read_bytes(key))
+    catalog = ArtifactCatalog(manifest)
+    musicxml_key = catalog.musicxml()
+    if musicxml_key and storage.exists(musicxml_key):
+        return "musicxml", _load_score_notes_from_musicxml(storage.read_bytes(musicxml_key))
     midi_key = manifest.artifacts.get("masterclass/reference/midi")
     if midi_key and storage.exists(midi_key):
         return "midi", _load_score_notes(storage.read_bytes(midi_key))
