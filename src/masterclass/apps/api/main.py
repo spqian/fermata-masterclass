@@ -35,6 +35,7 @@ from masterclass.engine.mechanical_comments import generate_mechanical_comments,
 from masterclass.engine.midi_finder import MidiFinderConfig, auto_attach_midi_to_masterclass
 from masterclass.engine.onsets import detect_rich_onsets
 from masterclass.engine.rhythm import analyze_rhythm, persist_rhythm
+from masterclass.engine.debug_spectrogram import render_window as render_spectrogram_window
 from masterclass.engine.score_map import build_score_map, persist_score_map
 from masterclass.engine.chat_guardrails import (
     ChatGuardrailError,
@@ -67,6 +68,7 @@ if BaseModel is not None:
         gemini_api_key: str | None = None
         clear_gemini_key: bool = False
         preferred_model: str | None = None
+        pro_mode: bool | None = None
 
 
 def _build_storage() -> ObjectStorage:
@@ -622,6 +624,8 @@ def create_app():
                 profile = user_profiles.clear_gemini_key(ctx.user_id)
             if body.gemini_api_key is not None and body.gemini_api_key.strip():
                 profile = user_profiles.set_gemini_key(ctx.user_id, body.gemini_api_key)
+            if body.pro_mode is not None:
+                profile = user_profiles.set_pro_mode(ctx.user_id, body.pro_mode)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return profile.public_json()
@@ -1322,6 +1326,212 @@ def create_app():
             if isinstance(usage, dict) and isinstance(usage.get("tool_calls"), list):
                 calls.extend(usage["tool_calls"])
         return {"tool_calls": calls}
+
+    # ------------------------------------------------------------------
+    # Technical Viewer (Pro mode) - raw evidence inspection for power users
+    # ------------------------------------------------------------------
+    def _pro_ctx(ctx: TenantContext = Depends(tenant_from_header)) -> TenantContext:
+        """Gate that requires the caller to have pro_mode=true.
+
+        This is the single chokepoint that future billing checks plug into:
+        flip pro_mode based on entitlement and every /debug/* route + the
+        viewer page light up automatically.
+        """
+        try:
+            profile = user_profiles.load(ctx.user_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=401, detail="Sign in with Google") from exc
+        if not getattr(profile, "pro_mode", False):
+            raise HTTPException(
+                status_code=403,
+                detail="Technical viewer requires Pro mode (enable in Settings).",
+            )
+        return ctx
+
+    def _load_lesson_artifact(ctx: TenantContext, session_id: str, rel: str):
+        """Read a per-lesson artifact via the same dual-path lookup other routes use."""
+        manifest = store.load_by_id(ctx, session_id)
+        key = manifest.artifacts.get(rel)
+        if key and storage.exists(key):
+            return manifest, key
+        fallback_key = store.artifact_key(manifest.session, rel)
+        if storage.exists(fallback_key):
+            return manifest, fallback_key
+        return manifest, None
+
+    @app.get("/lessons/{session_id}/technical-viewer", response_class=HTMLResponse)
+    def lesson_technical_viewer(
+        session_id: str,
+        ctx: TenantContext = Depends(_pro_ctx),
+    ) -> HTMLResponse:
+        # Reuse the same uuid4-hex allowlist that protects the player route from
+        # reflected XSS via the session_id path segment.
+        if not _SESSION_ID_RE.match(session_id or ""):
+            raise HTTPException(status_code=400, detail="invalid session id")
+        # Confirm the caller actually owns the lesson; load_by_id raises 404 if not.
+        store.load_by_id(ctx, session_id)
+        html = (static_dir / "technical_viewer.html").read_text(encoding="utf-8")
+        return HTMLResponse(
+            html.replace('"__SESSION_ID__"', json.dumps(session_id)),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        )
+
+    @app.get("/lessons/{session_id}/debug/comments")
+    def debug_comments(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        for rel in ("lesson/comments_enriched.json", "lesson/comments.json"):
+            _, key = _load_lesson_artifact(ctx, session_id, rel)
+            if key:
+                payload = storage.read_json(key)
+                if isinstance(payload, dict):
+                    return payload
+        raise HTTPException(status_code=404, detail="no comments artifact for this lesson")
+
+    @app.get("/lessons/{session_id}/debug/evidence-packet")
+    def debug_evidence_packet(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> Response:
+        _, key = _load_lesson_artifact(ctx, session_id, "analysis/evidence_packet.md")
+        if not key:
+            raise HTTPException(status_code=404, detail="no evidence packet for this lesson")
+        return Response(content=storage.read_bytes(key), media_type="text/markdown; charset=utf-8")
+
+    @app.get("/lessons/{session_id}/debug/raw-llm-response")
+    def debug_raw_llm_response(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        _, key = _load_lesson_artifact(ctx, session_id, "llm/raw_teacher_response.json")
+        if not key:
+            raise HTTPException(status_code=404, detail="no raw LLM response for this lesson")
+        payload = storage.read_json(key)
+        if not isinstance(payload, dict):
+            return {"raw": payload}
+        return payload
+
+    @app.get("/lessons/{session_id}/debug/analysis")
+    def debug_analysis(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        _, key = _load_lesson_artifact(ctx, session_id, "analysis/analysis.json")
+        if not key:
+            raise HTTPException(status_code=404, detail="no analysis artifact for this lesson")
+        payload = storage.read_json(key)
+        return payload if isinstance(payload, dict) else {"analysis": payload}
+
+    @app.get("/lessons/{session_id}/debug/hmm-aligned-notes")
+    def debug_hmm_notes(
+        session_id: str,
+        start: float | None = None,
+        end: float | None = None,
+        ctx: TenantContext = Depends(_pro_ctx),
+    ) -> dict:
+        _, key = _load_lesson_artifact(ctx, session_id, "analysis/hmm_aligned_notes.json")
+        if not key:
+            raise HTTPException(status_code=404, detail="no HMM aligned notes for this lesson")
+        payload = storage.read_json(key)
+        notes = payload.get("notes") if isinstance(payload, dict) else None
+        if not isinstance(notes, list):
+            return payload if isinstance(payload, dict) else {"notes": []}
+        if start is not None or end is not None:
+            lo = start if start is not None else float("-inf")
+            hi = end if end is not None else float("inf")
+            notes = [
+                n for n in notes
+                if isinstance(n, dict)
+                and lo <= float(n.get("performed_time_sec", n.get("perf_time", 0.0)) or 0.0) <= hi
+            ]
+        return {"notes": notes, "schema_version": payload.get("schema_version") if isinstance(payload, dict) else None}
+
+    @app.get("/lessons/{session_id}/debug/pitch-events")
+    def debug_pitch_events(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        _, key = _load_lesson_artifact(ctx, session_id, "analysis/pitch_events.json")
+        if not key:
+            raise HTTPException(status_code=404, detail="no pitch events for this lesson")
+        payload = storage.read_json(key)
+        return payload if isinstance(payload, dict) else {"events": payload}
+
+    @app.get("/lessons/{session_id}/debug/mechanical-comments")
+    def debug_mechanical_comments(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        _, key = _load_lesson_artifact(ctx, session_id, "analysis/mechanical_comments.json")
+        if not key:
+            raise HTTPException(status_code=404, detail="no mechanical comments for this lesson")
+        payload = storage.read_json(key)
+        return payload if isinstance(payload, dict) else {"comments": payload}
+
+    @app.get("/lessons/{session_id}/debug/spectrogram")
+    def debug_spectrogram(
+        session_id: str,
+        start: float,
+        end: float,
+        w: int = 1100,
+        h: int = 280,
+        ctx: TenantContext = Depends(_pro_ctx),
+    ) -> Response:
+        manifest = store.load_by_id(ctx, session_id)
+        # Prefer the lower-rate 16k file for speed; fall back to full-quality.
+        audio_key = manifest.artifacts.get("artifacts/audio_16k.wav") or manifest.artifacts.get("artifacts/audio.wav")
+        if not audio_key:
+            audio_key = store.artifact_key(manifest.session, "artifacts/audio_16k.wav")
+            if not storage.exists(audio_key):
+                audio_key = store.artifact_key(manifest.session, "artifacts/audio.wav")
+                if not storage.exists(audio_key):
+                    raise HTTPException(status_code=404, detail="lesson has no decoded audio")
+        try:
+            png = render_spectrogram_window(
+                storage=storage,
+                audio_key=audio_key,
+                start_sec=float(start),
+                end_sec=float(end),
+                width=int(w),
+                height=int(h),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    _WATCH_CLIP_RE = re.compile(r"^clip_\d+_\d+_h\d+\.mp4$")
+
+    @app.get("/lessons/{session_id}/debug/watch-clip/{clip_name}")
+    def debug_watch_clip(
+        session_id: str,
+        clip_name: str,
+        ctx: TenantContext = Depends(_pro_ctx),
+    ) -> Response:
+        # Strict filename allowlist: prevents path-traversal via the clip_name segment.
+        if not _WATCH_CLIP_RE.match(clip_name or ""):
+            raise HTTPException(status_code=400, detail="invalid clip filename")
+        manifest = store.load_by_id(ctx, session_id)
+        key = store.artifact_key(manifest.session, f"watch_clips/{clip_name}")
+        if not storage.exists(key):
+            raise HTTPException(status_code=404, detail="watch clip not found")
+        return Response(
+            content=storage.read_bytes(key),
+            media_type="video/mp4",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    @app.get("/lessons/{session_id}/debug/watch-clips")
+    def debug_list_watch_clips(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        """List the watch-clip filenames Gemini was given for this lesson."""
+        manifest = store.load_by_id(ctx, session_id)
+        if not isinstance(storage, LocalObjectStorage):
+            return {"clips": [], "note": "listing only supported on local storage"}
+        prefix = store.artifact_key(manifest.session, "watch_clips")
+        local_dir = storage.resolve_local_path(prefix)
+        if not local_dir.exists() or not local_dir.is_dir():
+            return {"clips": []}
+        clips = []
+        for p in sorted(local_dir.iterdir()):
+            if not _WATCH_CLIP_RE.match(p.name):
+                continue
+            stem = p.stem  # clip_0009000_0010000_h480
+            parts = stem.split("_")
+            start_ms = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
+            end_ms = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
+            clips.append({
+                "name": p.name,
+                "size_bytes": p.stat().st_size,
+                "start_sec": (start_ms / 1000.0) if start_ms is not None else None,
+                "end_sec": (end_ms / 1000.0) if end_ms is not None else None,
+            })
+        return {"clips": clips}
 
     @app.post("/lessons/{session_id}/chat")
     def lesson_chat(session_id: str, body: ChatRequest = Body(...), ctx: TenantContext = Depends(tenant_from_header)) -> dict:

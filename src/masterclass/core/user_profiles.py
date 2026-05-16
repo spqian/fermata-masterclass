@@ -31,6 +31,7 @@ class UserProfile:
     preferred_model: PreferredModel = DEFAULT_MODEL
     encrypted_gemini_key: str | None = None
     gemini_key_set_at: str | None = None
+    pro_mode: bool = False
     created_at: str = ""
     last_login_at: str = ""
 
@@ -47,6 +48,7 @@ class UserProfile:
             preferred_model=model,  # type: ignore[arg-type]
             encrypted_gemini_key=data.get("encrypted_gemini_key"),
             gemini_key_set_at=data.get("gemini_key_set_at"),
+            pro_mode=bool(data.get("pro_mode", False)),
             created_at=str(data.get("created_at") or now),
             last_login_at=str(data.get("last_login_at") or now),
         )
@@ -63,6 +65,7 @@ class UserProfile:
             "has_gemini_key": bool(self.encrypted_gemini_key),
             "gemini_key_set_at": self.gemini_key_set_at,
             "preferred_model": self.preferred_model,
+            "pro_mode": self.pro_mode,
             "created_at": self.created_at,
             "last_login_at": self.last_login_at,
         }
@@ -116,6 +119,18 @@ class UserProfileStore:
             raise ValueError("preferred_model must be gemini-2.5-pro or gemini-2.5-flash")
         profile = self.load(google_sub)
         profile.preferred_model = model  # type: ignore[assignment]
+        return self.upsert(profile)
+
+    def set_pro_mode(self, google_sub: str, enabled: bool) -> UserProfile:
+        """Toggle the Pro/Advanced mode flag.
+
+        Future-paywall hook: today every user can self-enable from Settings, but
+        the flag is the single gate that all premium-only routes check. When we
+        introduce billing, this method becomes the place to verify entitlement
+        before flipping pro_mode to True.
+        """
+        profile = self.load(google_sub)
+        profile.pro_mode = bool(enabled)
         return self.upsert(profile)
 
     def set_gemini_key(self, google_sub: str, plaintext: str) -> UserProfile:

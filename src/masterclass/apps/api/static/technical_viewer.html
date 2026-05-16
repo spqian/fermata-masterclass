@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Technical Viewer · Music Masterclass</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root { color-scheme: dark;
+      --bg:#0b0d12; --panel:rgba(22,24,32,.94); --panel-edge:rgba(255,255,255,.06);
+      --ink:#f5f1e8; --ink-soft:#c5c0b3; --ink-mute:#7a7669;
+      --gold:#c9a96a; --gold-soft:#8a7654; --rule:rgba(201,169,106,.22);
+      --danger:#d97a6c; --accent:#a4b8d6; --good:#8ec585; --warn:#e1c477; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Inter",system-ui,sans-serif; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; padding:14px 24px; border-bottom:1px solid var(--panel-edge); position:sticky; top:0; background:var(--bg); z-index:50; }
+    .brand { display:flex; align-items:center; gap:12px; font-size:13px; font-weight:600; color:var(--ink-soft); }
+    .mark { width:26px; height:26px; border:1px solid var(--gold); color:var(--gold); border-radius:4px; display:grid; place-items:center; font-weight:700; }
+    .topbar .crumbs { color:var(--ink-mute); font-family:"JetBrains Mono",monospace; font-size:11px; }
+    .topbar .crumbs span.tag { color:var(--gold); border:1px solid var(--rule); padding:2px 6px; border-radius:3px; margin-left:8px; }
+    .topbar a { color:var(--ink-mute); text-decoration:none; font-size:12px; margin-left:14px; }
+    .topbar a:hover { color:var(--gold); }
+    main { padding:18px 24px 80px; max-width:1400px; margin:0 auto; }
+    h1 { font-size:18px; margin:0 0 4px; }
+    .sub { color:var(--ink-mute); margin-bottom:18px; font-family:"JetBrains Mono",monospace; font-size:12px; }
+    .layout { display:grid; grid-template-columns: 340px 1fr; gap:16px; }
+    .col { min-width:0; }
+
+    /* Comments list */
+    .comments-list { background:var(--panel); border:1px solid var(--panel-edge); border-radius:6px; padding:8px; max-height:80vh; overflow-y:auto; position:sticky; top:64px; }
+    .comments-list h3 { margin:8px 8px 12px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-mute); }
+    .comment-row { padding:9px 10px; border-radius:4px; cursor:pointer; margin-bottom:4px; border-left:3px solid transparent; }
+    .comment-row:hover { background:rgba(255,255,255,.03); }
+    .comment-row.active { background:rgba(201,169,106,.08); border-left-color:var(--gold); }
+    .comment-row .meta { font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--ink-mute); margin-bottom:3px; display:flex; gap:8px; align-items:center; }
+    .comment-row .sev { padding:1px 6px; border-radius:3px; font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+    .sev.alert { background:rgba(217,122,108,.18); color:var(--danger); }
+    .sev.warn { background:rgba(225,196,119,.16); color:var(--warn); }
+    .sev.info { background:rgba(164,184,214,.16); color:var(--accent); }
+    .comment-row .summary { font-size:13px; line-height:1.4; color:var(--ink); }
+
+    /* Verification panel */
+    .panel-card { background:var(--panel); border:1px solid var(--panel-edge); border-radius:6px; margin-bottom:14px; }
+    .panel-head { padding:12px 16px; border-bottom:1px solid var(--panel-edge); display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none; }
+    .panel-head h2 { margin:0; font-size:13px; letter-spacing:.05em; }
+    .panel-head .badge { font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--ink-mute); }
+    .panel-head .chev { color:var(--ink-mute); font-size:11px; }
+    .panel-body { padding:14px 16px; }
+    .panel-card.collapsed .panel-body { display:none; }
+    .panel-card.collapsed .chev::before { content:"▸"; }
+    .panel-card:not(.collapsed) .chev::before { content:"▾"; }
+
+    .nowrap { white-space:nowrap; }
+    code, pre { font-family:"JetBrains Mono",monospace; }
+    pre { background:rgba(0,0,0,.32); padding:12px 14px; border-radius:4px; color:var(--ink-soft); font-size:12px; line-height:1.5; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    .focus-box { padding:14px 16px; background:rgba(201,169,106,.06); border:1px dashed var(--rule); border-radius:4px; margin-bottom:14px; }
+    .focus-box .label { font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--gold-soft); margin-bottom:6px; }
+    .focus-box .body { font-size:15px; color:var(--ink); }
+    .focus-box .body em { color:var(--ink-soft); font-style:normal; }
+    .verdict { display:flex; align-items:center; gap:10px; font-size:13px; padding:10px 14px; border-radius:4px; margin-bottom:10px; }
+    .verdict.match { background:rgba(142,197,133,.12); color:var(--good); border:1px solid rgba(142,197,133,.25); }
+    .verdict.mismatch { background:rgba(217,122,108,.12); color:var(--danger); border:1px solid rgba(217,122,108,.25); }
+    .verdict.unknown { background:rgba(255,255,255,.04); color:var(--ink-mute); border:1px solid var(--panel-edge); }
+    .audio-row { display:flex; gap:10px; align-items:center; margin-bottom:12px; }
+    button { background:var(--gold); color:#1a1610; border:0; border-radius:4px; padding:8px 14px; font:600 12px "Inter",sans-serif; cursor:pointer; }
+    button:hover { background:#dab87b; }
+    button.ghost { background:transparent; color:var(--ink-soft); border:1px solid rgba(255,255,255,.14); }
+    button.ghost:hover { border-color:var(--gold); color:var(--ink); }
+    button:disabled { opacity:.4; cursor:not-allowed; }
+    audio { height:34px; }
+    .spec-img { width:100%; display:block; border-radius:4px; background:#000; }
+    .specgram-status { font-size:11px; color:var(--ink-mute); margin-top:6px; font-family:"JetBrains Mono",monospace; }
+    table.notes { width:100%; border-collapse:collapse; font-family:"JetBrains Mono",monospace; font-size:11px; }
+    table.notes th, table.notes td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--panel-edge); }
+    table.notes th { color:var(--ink-mute); font-weight:500; letter-spacing:.08em; text-transform:uppercase; font-size:10px; }
+    table.notes tr.highlight td { background:rgba(201,169,106,.08); }
+    .conf-low { color:var(--warn); } .conf-medium { color:var(--accent); } .conf-high { color:var(--good); }
+    .placeholder { color:var(--ink-mute); font-style:italic; padding:14px 0; }
+    .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:12px; color:var(--ink-soft); }
+    .toolbar input[type=number] { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.1); color:var(--ink); padding:5px 8px; border-radius:3px; width:80px; font-family:"JetBrains Mono",monospace; }
+    .clip-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
+    .clip-card { background:rgba(0,0,0,.22); border-radius:4px; padding:10px; }
+    .clip-card video { width:100%; border-radius:3px; background:#000; }
+    .clip-card .clip-meta { font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--ink-mute); margin-top:6px; }
+    .markdown { white-space:pre-wrap; font-family:"JetBrains Mono",monospace; font-size:12px; line-height:1.6; color:var(--ink-soft); max-height:520px; overflow:auto; background:rgba(0,0,0,.32); padding:12px 14px; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">m</div>
+      <span>Technical Viewer</span>
+      <span class="crumbs" id="crumbs">loading…<span class="tag">PRO</span></span>
+    </div>
+    <div>
+      <a id="back-to-player" href="#">← back to player</a>
+      <a href="/settings">settings</a>
+    </div>
+  </header>
+
+  <main>
+    <h1 id="title">Lesson debug viewer</h1>
+    <div class="sub" id="subtitle">session=… · loading metadata</div>
+
+    <div class="layout">
+      <aside class="col">
+        <div class="comments-list" id="comments-list">
+          <h3>Teacher comments</h3>
+          <div class="placeholder">loading comments…</div>
+        </div>
+      </aside>
+
+      <section class="col">
+        <!-- 1. Comment focus + verification -->
+        <div class="panel-card" id="panel-focus">
+          <div class="panel-head" data-toggle="panel-focus">
+            <h2>Comment in focus</h2>
+            <span class="badge" id="focus-badge">—</span>
+            <span class="chev"></span>
+          </div>
+          <div class="panel-body" id="focus-body">
+            <div class="placeholder">Select a comment on the left to inspect the evidence behind it.</div>
+          </div>
+        </div>
+
+        <!-- 2. Spectrogram -->
+        <div class="panel-card" id="panel-spectrogram">
+          <div class="panel-head" data-toggle="panel-spectrogram">
+            <h2>Spectrogram</h2>
+            <span class="badge" id="spec-badge">mel · 0–8 kHz</span>
+            <span class="chev"></span>
+          </div>
+          <div class="panel-body">
+            <div class="toolbar">
+              <label>start <input type="number" id="spec-start" step="0.1" min="0" value="0"></label>
+              <label>end <input type="number" id="spec-end" step="0.1" min="0.25" value="5"></label>
+              <button id="spec-refresh">Render</button>
+              <button class="ghost" id="spec-fit-to-comment">Fit to comment</button>
+              <span class="specgram-status" id="spec-status"></span>
+            </div>
+            <img class="spec-img" id="spec-img" alt="spectrogram (select a comment or press Render)">
+          </div>
+        </div>
+
+        <!-- 3. HMM aligned notes in window -->
+        <div class="panel-card" id="panel-hmm">
+          <div class="panel-head" data-toggle="panel-hmm">
+            <h2>HMM-aligned notes in window</h2>
+            <span class="badge" id="hmm-badge">—</span>
+            <span class="chev"></span>
+          </div>
+          <div class="panel-body" id="hmm-body">
+            <div class="placeholder">Select a comment to see the aligned reference notes around it.</div>
+          </div>
+        </div>
+
+        <!-- 4. Watch clips Gemini saw -->
+        <div class="panel-card collapsed" id="panel-clips">
+          <div class="panel-head" data-toggle="panel-clips">
+            <h2>Watch clips sent to Gemini</h2>
+            <span class="badge" id="clips-badge">—</span>
+            <span class="chev"></span>
+          </div>
+          <div class="panel-body" id="clips-body">
+            <div class="placeholder">loading clips…</div>
+          </div>
+        </div>
+
+        <!-- 5. Raw LLM I/O -->
+        <div class="panel-card collapsed" id="panel-raw">
+          <div class="panel-head" data-toggle="panel-raw">
+            <h2>Raw LLM input &amp; output</h2>
+            <span class="badge">evidence_packet.md · raw_teacher_response.json · tool-calls</span>
+            <span class="chev"></span>
+          </div>
+          <div class="panel-body">
+            <h3 style="margin:0 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">EVIDENCE PACKET</h3>
+            <div class="markdown" id="raw-evidence">loading…</div>
+            <h3 style="margin:14px 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">RAW LLM RESPONSE (JSON)</h3>
+            <pre id="raw-response">loading…</pre>
+            <h3 style="margin:14px 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">TOOL CALLS</h3>
+            <pre id="raw-tool-calls">loading…</pre>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+<script>
+  const SESSION_ID = "__SESSION_ID__";
+  const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const midiToName = m => `${NOTE_NAMES[m % 12]}${Math.floor(m / 12) - 1}`;
+  function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+
+  document.getElementById("back-to-player").href = `/lessons/${encodeURIComponent(SESSION_ID)}/player`;
+  document.getElementById("subtitle").textContent = `session=${SESSION_ID}`;
+
+  document.querySelectorAll(".panel-head").forEach(h => {
+    h.addEventListener("click", () => document.getElementById(h.dataset.toggle).classList.toggle("collapsed"));
+  });
+
+  async function api(url, opts = {}) {
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(`${url} → ${r.status} ${r.statusText}`);
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return r.json();
+    if (ct.startsWith("image/")) return r.blob();
+    return r.text();
+  }
+
+  let comments = [];
+  let hmmNotes = [];
+  let currentComment = null;
+
+  async function loadComments() {
+    try {
+      const data = await api(`/lessons/${SESSION_ID}/debug/comments`);
+      comments = Array.isArray(data.comments) ? data.comments : [];
+      renderCommentsList();
+    } catch (e) {
+      document.getElementById("comments-list").innerHTML = `<h3>Teacher comments</h3><div class="placeholder">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderCommentsList() {
+    const root = document.getElementById("comments-list");
+    if (!comments.length) {
+      root.innerHTML = `<h3>Teacher comments</h3><div class="placeholder">no comments saved for this lesson</div>`;
+      return;
+    }
+    const rows = comments.map((c, i) => {
+      const sev = (c.severity || "info").toLowerCase();
+      const t = c.start != null ? formatTime(c.start) : "--:--";
+      const mm = c.measure != null ? `m.${c.measure}` : "";
+      return `<div class="comment-row" data-idx="${i}">
+        <div class="meta">
+          <span class="sev ${sev}">${escapeHtml(sev)}</span>
+          <span>${escapeHtml(t)}</span>
+          <span>${escapeHtml(mm)}</span>
+          <span>${escapeHtml(c.category || "")}</span>
+        </div>
+        <div class="summary">${escapeHtml(c.summary || c.text || "(no summary)")}</div>
+      </div>`;
+    }).join("");
+    root.innerHTML = `<h3>Teacher comments (${comments.length})</h3>${rows}`;
+    root.querySelectorAll(".comment-row").forEach(el => {
+      el.addEventListener("click", () => focusComment(parseInt(el.dataset.idx, 10)));
+    });
+  }
+
+  function formatTime(sec) {
+    const s = Math.max(0, Number(sec) || 0);
+    const m = Math.floor(s / 60);
+    const r = (s % 60).toFixed(1);
+    return `${m}:${r.padStart(4, "0")}`;
+  }
+
+  async function focusComment(idx) {
+    currentComment = comments[idx];
+    if (!currentComment) return;
+    document.querySelectorAll(".comment-row").forEach(el => el.classList.toggle("active", parseInt(el.dataset.idx, 10) === idx));
+    renderFocusPanel(currentComment);
+    const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
+    const end = (currentComment.end ?? start + 3) + 0.5;
+    document.getElementById("spec-start").value = start.toFixed(2);
+    document.getElementById("spec-end").value = end.toFixed(2);
+    renderSpectrogram(start, end);
+    renderHmmWindow(start, end);
+  }
+
+  function renderFocusPanel(c) {
+    const body = document.getElementById("focus-body");
+    document.getElementById("focus-badge").textContent = `${formatTime(c.start)} → ${formatTime(c.end)} · m.${c.measure ?? "?"}`;
+    const refs = (c.references || []).map(r => escapeHtml(String(r))).join("<br>") || "<em>(no references)</em>";
+    const prov = (c.provenance || []).map(p => `<code>${escapeHtml(String(p))}</code>`).join(" ") || "<em>(no provenance)</em>";
+    body.innerHTML = `
+      <div class="focus-box">
+        <div class="label">${escapeHtml(c.severity || "info")} · ${escapeHtml(c.category || "")} · confidence=${escapeHtml(c.confidence || "?")}</div>
+        <div class="body"><strong>${escapeHtml(c.summary || "")}</strong><br><em>${escapeHtml(c.text || "")}</em></div>
+      </div>
+      <div class="audio-row" id="audio-row"></div>
+      <div style="font-size:12px; color:var(--ink-mute); margin-bottom:6px;">PROVENANCE: ${prov}</div>
+      <div style="font-size:11px; color:var(--ink-mute); font-family:'JetBrains Mono',monospace;">REFERENCES:<br>${refs}</div>
+    `;
+    // Audio chunk player — server already serves the full audio, the <audio> element
+    // can seek to the comment's time window.
+    const start = Math.max(0, (c.start ?? 0) - 0.3);
+    const end = (c.end ?? start + 3) + 0.3;
+    body.querySelector("#audio-row").innerHTML = `
+      <button id="play-clip">▶ Play ${(end - start).toFixed(1)}s clip</button>
+      <span style="font-size:11px;color:var(--ink-mute);">${formatTime(start)} – ${formatTime(end)}</span>
+    `;
+    body.querySelector("#play-clip").addEventListener("click", () => playClip(start, end));
+  }
+
+  let activeAudio = null;
+  function playClip(start, end) {
+    if (activeAudio) { activeAudio.pause(); activeAudio = null; }
+    const audio = new Audio(`/lessons/${SESSION_ID}/video`);
+    audio.currentTime = start;
+    activeAudio = audio;
+    audio.play().catch(err => console.warn("playback failed", err));
+    const stopAt = setInterval(() => {
+      if (audio.currentTime >= end) { audio.pause(); clearInterval(stopAt); }
+    }, 50);
+    audio.addEventListener("pause", () => clearInterval(stopAt));
+  }
+
+  async function renderSpectrogram(start, end) {
+    const img = document.getElementById("spec-img");
+    const status = document.getElementById("spec-status");
+    status.textContent = `rendering ${(end - start).toFixed(2)}s window…`;
+    const url = `/lessons/${SESSION_ID}/debug/spectrogram?start=${start.toFixed(3)}&end=${end.toFixed(3)}&w=1100&h=300`;
+    try {
+      const blob = await api(url);
+      const old = img.src;
+      img.src = URL.createObjectURL(blob);
+      if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+      status.textContent = `rendered ${start.toFixed(2)}s → ${end.toFixed(2)}s`;
+    } catch (e) {
+      status.textContent = `render failed: ${e.message}`;
+    }
+  }
+
+  async function ensureHmmLoaded() {
+    if (hmmNotes.length) return;
+    try {
+      const data = await api(`/lessons/${SESSION_ID}/debug/hmm-aligned-notes`);
+      hmmNotes = Array.isArray(data.notes) ? data.notes : [];
+    } catch (e) {
+      document.getElementById("hmm-body").innerHTML = `<div class="placeholder">HMM data unavailable: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function renderHmmWindow(start, end) {
+    await ensureHmmLoaded();
+    const win = hmmNotes.filter(n => {
+      const t = n.performed_time_sec ?? n.perf_time ?? 0;
+      return t >= start && t <= end;
+    });
+    const body = document.getElementById("hmm-body");
+    document.getElementById("hmm-badge").textContent = `${win.length} of ${hmmNotes.length} notes in window`;
+    if (!win.length) { body.innerHTML = `<div class="placeholder">no aligned notes in this window</div>`; return; }
+    const rows = win.map(n => {
+      const pitches = Array.isArray(n.names) && n.names.length ? n.names.join("+")
+                     : (n.pitches_midi || []).map(midiToName).join("+");
+      const t = (n.performed_time_sec ?? n.perf_time ?? 0).toFixed(3);
+      const score_t = (n.score_time_in_movement ?? n.score_time_local ?? 0).toFixed(3);
+      const dur = (n.expected_perf_duration ?? 0).toFixed(3);
+      const dwell = (n.dwell_sec ?? 0).toFixed(3);
+      const conf = (n.confidence || "?").toLowerCase();
+      const inCmt = currentComment && t >= (currentComment.start ?? 0) - 0.05 && t <= (currentComment.end ?? 1e9) + 0.05;
+      return `<tr class="${inCmt ? "highlight" : ""}">
+        <td>m.${escapeHtml(String(n.measure ?? "?"))}</td>
+        <td>${t}s</td>
+        <td>${score_t}s</td>
+        <td>${escapeHtml(pitches)}</td>
+        <td>${dur}</td>
+        <td>${dwell}</td>
+        <td class="conf-${conf}">${escapeHtml(conf)}</td>
+        <td>${escapeHtml(n.timestamp_source || "")}</td>
+      </tr>`;
+    }).join("");
+    body.innerHTML = `<table class="notes">
+      <thead><tr>
+        <th>measure</th><th>perf time</th><th>score time</th><th>pitches</th>
+        <th>exp dur</th><th>dwell</th><th>conf</th><th>source</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  async function loadWatchClips() {
+    const body = document.getElementById("clips-body");
+    try {
+      const data = await api(`/lessons/${SESSION_ID}/debug/watch-clips`);
+      const clips = data.clips || [];
+      document.getElementById("clips-badge").textContent = `${clips.length} clip${clips.length === 1 ? "" : "s"}`;
+      if (!clips.length) {
+        body.innerHTML = `<div class="placeholder">no watch clips saved for this lesson</div>`;
+        return;
+      }
+      body.innerHTML = `<div class="clip-grid">${clips.map(c => `
+        <div class="clip-card">
+          <video controls preload="metadata" src="/lessons/${SESSION_ID}/debug/watch-clip/${encodeURIComponent(c.name)}"></video>
+          <div class="clip-meta">${escapeHtml(c.name)}<br>${c.start_sec != null ? `${c.start_sec.toFixed(2)}s → ${c.end_sec.toFixed(2)}s` : ""} · ${(c.size_bytes/1024).toFixed(1)} KB</div>
+        </div>`).join("")}</div>`;
+    } catch (e) {
+      body.innerHTML = `<div class="placeholder">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function loadRaw() {
+    try {
+      const md = await api(`/lessons/${SESSION_ID}/debug/evidence-packet`);
+      document.getElementById("raw-evidence").textContent = md;
+    } catch (e) {
+      document.getElementById("raw-evidence").textContent = `(evidence packet unavailable: ${e.message})`;
+    }
+    try {
+      const j = await api(`/lessons/${SESSION_ID}/debug/raw-llm-response`);
+      document.getElementById("raw-response").textContent = JSON.stringify(j, null, 2);
+    } catch (e) {
+      document.getElementById("raw-response").textContent = `(raw response unavailable: ${e.message})`;
+    }
+    try {
+      const j = await api(`/lessons/${SESSION_ID}/tool-calls`);
+      document.getElementById("raw-tool-calls").textContent = JSON.stringify(j, null, 2);
+    } catch (e) {
+      document.getElementById("raw-tool-calls").textContent = `(tool calls unavailable: ${e.message})`;
+    }
+  }
+
+  document.getElementById("spec-refresh").addEventListener("click", () => {
+    const s = parseFloat(document.getElementById("spec-start").value);
+    const e = parseFloat(document.getElementById("spec-end").value);
+    if (isFinite(s) && isFinite(e) && e > s) {
+      renderSpectrogram(s, e);
+      renderHmmWindow(s, e);
+    }
+  });
+  document.getElementById("spec-fit-to-comment").addEventListener("click", () => {
+    if (!currentComment) return;
+    const start = Math.max(0, (currentComment.start ?? 0) - 0.5);
+    const end = (currentComment.end ?? start + 3) + 0.5;
+    document.getElementById("spec-start").value = start.toFixed(2);
+    document.getElementById("spec-end").value = end.toFixed(2);
+    renderSpectrogram(start, end);
+    renderHmmWindow(start, end);
+  });
+
+  // Bootstrap
+  (async () => {
+    await Promise.all([loadComments(), loadWatchClips(), loadRaw()]);
+    document.getElementById("crumbs").innerHTML = `lesson · ${escapeHtml(SESSION_ID.slice(0, 12))}…<span class="tag">PRO</span>`;
+    document.getElementById("title").textContent = `Lesson · ${SESSION_ID.slice(0, 12)}…`;
+    if (comments.length) focusComment(0);
+  })();
+</script>
+</body>
+</html>

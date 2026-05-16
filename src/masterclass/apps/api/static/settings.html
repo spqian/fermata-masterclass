@@ -55,6 +55,21 @@
       <div class="row"><button id="save-model">Save model</button><span id="model-status" class="status"></span></div>
     </section>
 
+    <section class="panel">
+      <h2>Pro mode <span style="color:var(--gold-soft); font-size:11px; letter-spacing:.1em; font-weight:600; margin-left:8px;">ADVANCED</span></h2>
+      <p style="color:var(--ink-soft); line-height:1.55; margin:0 0 14px;">
+        Unlocks the <strong>Technical Viewer</strong>, a per-lesson debugging surface for power users:
+        comment-by-comment evidence inspection, server-rendered mel spectrograms, the HMM-aligned note table,
+        the raw evidence packet and LLM response sent to Gemini, plus the watch-clips Gemini was given.
+        Useful when you want to verify whether a comment like &ldquo;the C is sharp&rdquo; is real or a hallucination.
+      </p>
+      <label class="radio" style="display:flex; align-items:center; gap:10px;">
+        <input type="checkbox" id="pro-mode-toggle">
+        <span><strong>Enable Pro mode</strong><br><small style="color:var(--ink-mute); margin-left:0;">Adds a &ldquo;🔬 Technical Viewer&rdquo; entry to the lesson player menu.</small></span>
+      </label>
+      <div class="row"><span id="pro-mode-status" class="status"></span></div>
+    </section>
+
     <section class="panel"><button id="sign-out" class="ghost">Sign out</button></section>
   </main>
   <script>
@@ -80,6 +95,8 @@
       key.textContent = profile.has_gemini_key ? `✓ Key on file (set ${fmtSetAt(profile.gemini_key_set_at)})` : "⚠ No key configured";
       const radio = document.querySelector(`input[name=model][value="${profile.preferred_model || "gemini-2.5-pro"}"]`);
       if (radio) radio.checked = true;
+      const proToggle = document.getElementById("pro-mode-toggle");
+      if (proToggle) proToggle.checked = !!profile.pro_mode;
     }
     async function load() {
       try { profile = await api("/api/me/profile"); render(); }
@@ -101,6 +118,24 @@
       render();
     };
     document.getElementById("sign-out").onclick = async () => { await fetch("/auth/logout", { method:"POST" }); window.location.href = "/"; };
+
+    const proToggle = document.getElementById("pro-mode-toggle");
+    if (proToggle) {
+      proToggle.addEventListener("change", async (ev) => {
+        const status = document.getElementById("pro-mode-status");
+        status.textContent = "saving…"; status.className = "status";
+        try {
+          profile = await api("/api/me/profile", { method:"PATCH", body: JSON.stringify({ pro_mode: ev.target.checked }) });
+          status.textContent = profile.pro_mode ? "✓ Pro mode enabled — open any lesson to see the Technical Viewer link." : "Pro mode disabled.";
+          status.className = `status ${profile.pro_mode ? "good" : ""}`;
+          render();
+        } catch (err) {
+          status.textContent = `Failed: ${err.message}`; status.className = "status warn";
+          ev.target.checked = !ev.target.checked;
+        }
+      });
+    }
+
     load();
   </script>
 </body>

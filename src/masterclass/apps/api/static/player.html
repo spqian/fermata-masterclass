@@ -630,7 +630,10 @@
         pill.textContent = `${currentUser.email} ▾`;
         pill.href = "javascript:void(0)";
         pill.onclick = (e) => { e.preventDefault(); dropdown.classList.toggle("open"); };
-        dropdown.innerHTML = `<a href="/settings">Settings</a><button type="button" id="auth-signout">Sign out</button>`;
+        const proLink = currentUser.pro_mode
+          ? `<a href="/lessons/${encodeURIComponent(SESSION_ID)}/technical-viewer">🔬 Technical Viewer</a>`
+          : "";
+        dropdown.innerHTML = `<a href="/settings">Settings</a>${proLink}<button type="button" id="auth-signout">Sign out</button>`;
         document.getElementById("auth-signout").onclick = async () => { await fetch("/auth/logout", { method: "POST" }); window.location.href = "/"; };
       } else {
         pill.textContent = "Sign in with Google";
