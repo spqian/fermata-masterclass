@@ -201,7 +201,7 @@ async def complete_google_callback(request) -> tuple[GoogleIdentity, str]:
             redirect_uri=redirect_uri,
             code_verifier=oauth_state.get("code_verifier"),
         )
-        resp = await client.get(GOOGLE_USERINFO_URL, token=token)
+        resp = await client.get(GOOGLE_USERINFO_URL)
         resp.raise_for_status()
         info = resp.json()
 
