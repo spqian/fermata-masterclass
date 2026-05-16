@@ -120,7 +120,7 @@ class UserProfileStore:
 
     def set_gemini_key(self, google_sub: str, plaintext: str) -> UserProfile:
         profile = self.load(google_sub)
-        profile.encrypted_gemini_key = self.cipher.encrypt(plaintext)
+        profile.encrypted_gemini_key = self.cipher.encrypt(plaintext, aad=google_sub)
         profile.gemini_key_set_at = _now()
         return self.upsert(profile)
 
@@ -134,4 +134,4 @@ class UserProfileStore:
         profile = self.load(google_sub)
         if not profile.encrypted_gemini_key:
             return None
-        return self.cipher.decrypt(profile.encrypted_gemini_key)
+        return self.cipher.decrypt(profile.encrypted_gemini_key, aad=google_sub)

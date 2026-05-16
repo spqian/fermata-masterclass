@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 _LOG = logging.getLogger(__name__)
 _ENV_NAME = "MASTERCLASS_KEY_ENCRYPTION_KEY"
+_AESGCM_PREFIX = "gcm1:"  # versioned wire format: gcm1:<b64url(nonce|ciphertext+tag)>
 
 
 def _project_root() -> Path:
@@ -42,16 +46,58 @@ def ensure_key_encryption_key() -> str:
 
 
 class UserKeyCipher:
-    def __init__(self, key: str | None = None) -> None:
-        self._fernet = Fernet((key or ensure_key_encryption_key()).encode("ascii"))
+    """Encrypts per-user secrets (Gemini API keys) with AES-256-GCM.
 
-    def encrypt(self, plaintext: str) -> str:
+    The owner's stable id (``google_sub``) is passed as Associated Authenticated
+    Data so a malicious admin with filesystem access cannot swap two users'
+    encrypted blobs without the AEAD tag failing to verify.
+
+    Legacy Fernet ciphertexts (written before this AAD upgrade) are still
+    accepted on read for backwards compatibility; they should be rewritten on
+    the next ``encrypt()`` call.
+    """
+
+    def __init__(self, key: str | None = None) -> None:
+        raw = (key or ensure_key_encryption_key()).encode("ascii")
+        self._fernet = Fernet(raw)
+        # Fernet keys are 32 raw bytes encoded as urlsafe-b64; reuse those 32 bytes for AES-GCM.
+        try:
+            self._aes_key = base64.urlsafe_b64decode(raw)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ValueError(f"{_ENV_NAME} must be a Fernet-compatible urlsafe-base64 32-byte key") from exc
+        if len(self._aes_key) != 32:
+            raise ValueError(f"{_ENV_NAME} must decode to 32 bytes for AES-256-GCM")
+        self._aesgcm = AESGCM(self._aes_key)
+
+    def encrypt(self, plaintext: str, aad: str) -> str:
         value = plaintext.strip()
         if not value:
             raise ValueError("Gemini API key cannot be empty")
-        return self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
+        if not aad:
+            raise ValueError("encryption AAD (e.g. google_sub) is required")
+        nonce = os.urandom(12)
+        ct = self._aesgcm.encrypt(nonce, value.encode("utf-8"), aad.encode("utf-8"))
+        blob = base64.urlsafe_b64encode(nonce + ct).decode("ascii")
+        return f"{_AESGCM_PREFIX}{blob}"
 
-    def decrypt(self, token: str) -> str:
+    def decrypt(self, token: str, aad: str) -> str:
+        if not aad:
+            raise ValueError("decryption AAD (e.g. google_sub) is required")
+        if token.startswith(_AESGCM_PREFIX):
+            try:
+                raw = base64.urlsafe_b64decode(token[len(_AESGCM_PREFIX):].encode("ascii"))
+                if len(raw) < 13:
+                    raise ValueError("ciphertext too short")
+                nonce, ct = raw[:12], raw[12:]
+                return self._aesgcm.decrypt(nonce, ct, aad.encode("utf-8")).decode("utf-8")
+            except (InvalidTag, ValueError) as exc:
+                # InvalidTag => either tampering or wrong AAD/user; surface as ValueError so
+                # callers can return a stable error without leaking which case it was.
+                raise ValueError(
+                    "Stored Gemini API key could not be decrypted; check MASTERCLASS_KEY_ENCRYPTION_KEY "
+                    "or whether the profile file was moved between users"
+                ) from exc
+        # Legacy Fernet ciphertext (no AAD).
         try:
             return self._fernet.decrypt(token.encode("ascii")).decode("utf-8")
         except InvalidToken as exc:

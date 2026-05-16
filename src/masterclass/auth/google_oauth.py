@@ -124,6 +124,28 @@ def _code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
+def _id_token_nonce(id_token: str) -> str | None:
+    """Extract the ``nonce`` claim from an OIDC ID token (JWS compact form).
+
+    The token already arrived over TLS straight from Google's token endpoint,
+    so we trust the transport for authenticity and only need the claim value
+    to compare against the cookie-stored nonce. We do not re-verify the
+    signature here.
+    """
+    try:
+        parts = id_token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        payload = base64.urlsafe_b64decode(payload_b64 + padding)
+        claims = json.loads(payload.decode("utf-8"))
+        nonce = claims.get("nonce")
+        return str(nonce) if nonce else None
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
 def build_login_redirect(request, next_url: str | None = None):
     from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -201,6 +223,14 @@ async def complete_google_callback(request) -> tuple[GoogleIdentity, str]:
             redirect_uri=redirect_uri,
             code_verifier=oauth_state.get("code_verifier"),
         )
+        # OpenID Connect: bind this callback to the original /auth/login by
+        # verifying the nonce echoed inside Google's signed ID token. Combined
+        # with the state cookie + PKCE verifier this closes the replay window.
+        expected_nonce = oauth_state.get("nonce")
+        if expected_nonce:
+            id_token = token.get("id_token") if isinstance(token, dict) else None
+            if not id_token or _id_token_nonce(id_token) != expected_nonce:
+                raise HTTPException(status_code=400, detail="Google sign-in nonce mismatch; try again")
         resp = await client.get(GOOGLE_USERINFO_URL)
         resp.raise_for_status()
         info = resp.json()

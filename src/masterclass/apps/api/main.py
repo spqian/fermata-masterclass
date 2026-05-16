@@ -560,6 +560,14 @@ def create_app():
 
     @app.post("/auth/logout")
     def auth_logout(request: Request):
+        # CSRF defense: only honor logout requests from a same-origin context.
+        # All modern browsers send Origin on POST; fall back to Referer if absent.
+        origin = (request.headers.get("origin") or "").rstrip("/")
+        referer = request.headers.get("referer") or ""
+        expected_root = f"{request.url.scheme}://{request.url.netloc}"
+        same_origin = (origin == expected_root) or (referer and referer.startswith(expected_root + "/"))
+        if not same_origin:
+            raise HTTPException(status_code=403, detail="Cross-origin logout blocked")
         response = RedirectResponse("/", status_code=303)
         clear_session_cookie(response, request)
         return response
@@ -1355,18 +1363,10 @@ def create_app():
             else:
                 check_conversation_turn_cap(0)
             check_user_quota(storage, ctx.tenant_id, ctx.user_id)
-            # TODO(auth-and-byok): replace this shared-key construction with
-            # use_for_user(ctx.user_id) so chat uses the user's per-user Gemini key.
-            if os.environ.get("MASTERCLASS_LLM_PROVIDER", "gemini").lower() == "dry-run":
-                from masterclass.agent.dry_run import DryRunLlmProvider
-                provider = DryRunLlmProvider()
-            elif os.environ.get("GEMINI_API_KEY"):
-                from masterclass.agent.gemini import SharedKeyGeminiProvider
-                provider = SharedKeyGeminiProvider()
-            else:
-                provider = None
-            if provider is None:
-                raise HTTPException(status_code=503, detail="Gemini provider is not configured")
+            # Use the caller's per-user BYO Gemini key (falls back to the server's
+            # shared key only when ALLOW_SERVER_DEFAULT_KEY=true) so chat respects
+            # the same billing/quota contract as lesson processing.
+            provider = _build_llm_provider_for_user(ctx.user_id)
             topic = topic_guard(storage, ctx.tenant_id, ctx.user_id, message, provider)
             chat_model = os.environ.get(
                 "MASTERCLASS_TEACH_MODEL",
