@@ -104,6 +104,20 @@
     .spec-playhead::after { content:""; position:absolute; left:-4px; top:-4px;
       width:10px; height:10px; border-radius:50%; background:#e07a5f;
       box-shadow:0 0 6px rgba(224,122,95,.85); }
+    /* HMM reference-pitch overlay: thin horizontal bars at the score-expected
+       fundamental, sitting on top of the spectrogram so the user can see
+       whether the brightness band aligns with where the score says the note
+       should be. Slight yellow/cyan glow makes them visible over magma. */
+    .hmm-overlay { position:absolute; pointer-events:none; left:0; top:0; right:0; bottom:0; display:none; z-index:23; }
+    .hmm-overlay.on { display:block; }
+    .hmm-bar { position:absolute; background:rgba(142,197,133,.85); height:2px;
+      box-shadow:0 0 4px rgba(142,197,133,.9); border-radius:1px; }
+    .hmm-bar.chord { background:rgba(164,184,214,.75); box-shadow:0 0 3px rgba(164,184,214,.8); }
+    .overlay-toggle { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-soft); margin-left:auto; cursor:pointer; user-select:none; }
+    .overlay-toggle input { accent-color:var(--gold); }
+    .legend-dot { display:inline-block; width:10px; height:3px; vertical-align:middle; margin-right:4px; border-radius:2px; }
+    .legend-dot.melody { background:rgba(142,197,133,.85); }
+    .legend-dot.chord { background:rgba(164,184,214,.75); }
     .placeholder { color:var(--ink-mute); font-style:italic; padding:14px 0; }
     .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; font-size:12px; color:var(--ink-soft); }
     .toolbar input[type=number] { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.1); color:var(--ink); padding:5px 8px; border-radius:3px; width:80px; font-family:"JetBrains Mono",monospace; }
@@ -174,10 +188,16 @@
               <label>end <input type="number" id="spec-end" step="0.1" min="0.25" value="5"></label>
               <button id="spec-refresh">Render</button>
               <button class="ghost" id="spec-fit-to-comment">Fit to comment</button>
+              <label class="overlay-toggle" title="Show score-expected pitches from the HMM alignment as thin horizontal bars">
+                <input type="checkbox" id="hmm-overlay-toggle" checked>
+                <span><span class="legend-dot melody"></span>melody &nbsp;<span class="legend-dot chord"></span>chord</span>
+                &nbsp;HMM overlay
+              </label>
               <span class="specgram-status" id="spec-status"></span>
             </div>
             <div class="spec-wrap">
               <img class="spec-img" id="spec-img" alt="spectrogram (select a comment or press Render)">
+              <div class="hmm-overlay on" id="hmm-overlay"></div>
               <div class="spec-crosshair h" id="spec-hline"></div>
               <div class="spec-crosshair v" id="spec-vline"></div>
               <div class="spec-playhead" id="spec-playhead"></div>
@@ -262,6 +282,9 @@
   const SPEC_PLOT = { left: 0.060, right: 0.992, bottom: 0.115, top: 0.935 };
   const SPEC_MIDI = { min: 24, max: 108 };
   let lastSpec = null;  // { startSec, endSec, naturalW, naturalH }
+  let comments = [];
+  let hmmNotes = [];
+  let currentComment = null;
 
   function midiToNoteName(midiFloat) {
     const m = Math.round(midiFloat);
@@ -532,6 +555,16 @@
         // Spectrogram window changed -> reposition the playhead (or hide it
         // if the audio's current time is outside the new window).
         renderPlayheadOnce();
+        // And re-draw the HMM overlay on the new window. The HMM data is
+        // already loaded if the panel has been visited; if not, this is a
+        // no-op until the next focusComment call.
+        if (currentComment && hmmNotes.length) {
+          const winNotes = hmmNotes.filter(n => {
+            const t = n.performed_time_sec ?? n.perf_time ?? 0;
+            return t >= start && t <= end;
+          });
+          renderHmmOverlay(winNotes, start, end);
+        }
       }, { once: true });
       status.textContent = `rendered ${start.toFixed(2)}s → ${end.toFixed(2)}s — hover for note + freq`;
     } catch (e) {
@@ -549,6 +582,58 @@
     }
   }
 
+  // ---------- HMM overlay ----------
+  // For each score note that falls inside the rendered spectrogram window,
+  // draw a thin horizontal bar at the expected pitch from t_start to
+  // t_start + expected_perf_duration. The single highest pitch per HMM state
+  // is the "melody" (drawn green); the rest are chord/accompaniment tones
+  // (drawn blue). The bars sit ON TOP of the magma spectrogram so the user
+  // can see at a glance whether the brightness band lines up with where the
+  // score says the note should be -- the fastest way to validate or
+  // falsify a teacher claim like "the C is sharp".
+  function renderHmmOverlay(win, start, end) {
+    const overlay = document.getElementById("hmm-overlay");
+    const img = document.getElementById("spec-img");
+    if (!overlay || !img) return;
+    overlay.innerHTML = "";
+    if (!win || !win.length) return;
+    // Match the overlay <div> to the rendered image size so absolute children
+    // can use pixel offsets that line up with the spectrogram's plot area.
+    const rect = img.getBoundingClientRect();
+    if (rect.width === 0) return;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+    const w = rect.width, h = rect.height;
+    const plotLeft = w * SPEC_PLOT.left;
+    const plotRight = w * SPEC_PLOT.right;
+    const plotTop = h * (1 - SPEC_PLOT.top);
+    const plotBottom = h * (1 - SPEC_PLOT.bottom);
+    const plotW = plotRight - plotLeft;
+    const plotH = plotBottom - plotTop;
+    const windowSec = end - start;
+    for (const n of win) {
+      const t0 = n.performed_time_sec ?? n.perf_time ?? 0;
+      const dur = Math.max(0.04, n.expected_perf_duration ?? 0.15);  // floor so very short notes are still visible
+      const t1 = Math.min(t0 + dur, end);
+      const x0 = plotLeft + ((t0 - start) / windowSec) * plotW;
+      const x1 = plotLeft + ((t1 - start) / windowSec) * plotW;
+      const pitches = Array.isArray(n.pitches_midi) ? n.pitches_midi : [];
+      if (!pitches.length) continue;
+      const topMidi = Math.max(...pitches);  // melody = highest voice
+      for (const midi of pitches) {
+        if (midi < SPEC_MIDI.min || midi > SPEC_MIDI.max) continue;
+        const y = plotTop + ((SPEC_MIDI.max - midi) / (SPEC_MIDI.max - SPEC_MIDI.min)) * plotH;
+        const bar = document.createElement("div");
+        bar.className = "hmm-bar" + (midi === topMidi ? "" : " chord");
+        bar.style.left = `${x0}px`;
+        bar.style.top = `${y}px`;
+        bar.style.width = `${Math.max(2, x1 - x0)}px`;
+        bar.title = `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}  ·  ${t0.toFixed(3)}s  ·  m.${n.measure ?? "?"}  ·  conf=${n.confidence || "?"}`;
+        overlay.appendChild(bar);
+      }
+    }
+  }
+
   async function renderHmmWindow(start, end) {
     await ensureHmmLoaded();
     const win = hmmNotes.filter(n => {
@@ -557,6 +642,9 @@
     });
     const body = document.getElementById("hmm-body");
     document.getElementById("hmm-badge").textContent = `${win.length} of ${hmmNotes.length} notes in window`;
+    // Also draw the overlay on the spectrogram so the user can read which
+    // bright band corresponds to the score-expected pitch.
+    renderHmmOverlay(win, start, end);
     if (!win.length) { body.innerHTML = `<div class="placeholder">no aligned notes in this window</div>`; return; }
     const rows = win.map(n => {
       const pitches = Array.isArray(n.names) && n.names.length ? n.names.join("+")
@@ -644,6 +732,9 @@
     document.getElementById("spec-end").value = end.toFixed(2);
     renderSpectrogram(start, end);
     renderHmmWindow(start, end);
+  });
+  document.getElementById("hmm-overlay-toggle").addEventListener("change", (ev) => {
+    document.getElementById("hmm-overlay").classList.toggle("on", ev.target.checked);
   });
 
   // Bootstrap
