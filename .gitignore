@@ -33,10 +33,21 @@ scripts/*
 scripts/__pycache__/
 scripts/barline_outputs/
 
-# Secrets
+# Secrets — never commit
 .env
-.env.local
+.env.*
+!.env.example
 *.key
+*.pem
+*.p12
+*.pfx
+client_secret*.json
+*credentials*.json
+*service-account*.json
+*.crt
+id_rsa
+id_rsa.pub
+*.token
 
 # Editor / OS
 .vscode/
