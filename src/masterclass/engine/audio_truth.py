@@ -407,6 +407,39 @@ def match_to_score(
 # End-to-end orchestration: write artifacts the technical viewer + future
 # teacher tools consume.
 # ---------------------------------------------------------------------------
+def _enrich_for_legacy_consumers(note: dict[str, Any]) -> dict[str, Any]:
+    """Add HMM-era field aliases to an audio-truth note so legacy consumers
+    (voicing/rhythm/intonation/score_map/inspect_*) see the names they grew
+    up reading. Each alias is derived from data we already have; nothing
+    fabricated.
+    """
+    enriched = dict(note)
+    # Score-time aliases: HMM-era code looks at score_time_in_movement and
+    # score_time_local on every note row; we have the same value under
+    # score_time_sec from the matcher.
+    score_t = enriched.get("score_time_sec")
+    if score_t is not None:
+        enriched.setdefault("score_time_in_movement", round(float(score_t), 3))
+        enriched.setdefault("score_time_local", round(float(score_t), 3))
+    # obs_log_prob: HMM used Viterbi observation log-prob as a quality scalar.
+    # We don't have one; expose amplitude (basic-pitch) or velocity-normalized
+    # (PTI) so consumers that gate on "is this note loud enough to trust"
+    # have something to read instead of None.
+    amp = enriched.get("amplitude")
+    if amp is not None and "obs_log_prob" not in enriched:
+        enriched["obs_log_prob"] = float(amp)
+    # expected_pitch hint: rhythm.py et al sometimes look at this to render
+    # mismatch info. For matched notes, the score pitch IS the expected pitch.
+    score_pitch = enriched.get("score_midi_pitch")
+    if score_pitch is not None and "expected_pitch" not in enriched:
+        enriched["expected_pitch"] = int(score_pitch)
+        # Name form too (e.g. "C5") -- mirrors the existing "names" list shape.
+        midi_int = int(score_pitch)
+        name = f"{['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'][midi_int % 12]}{midi_int // 12 - 1}"
+        enriched["expected_pitch_name"] = name
+    return enriched
+
+
 def _build_legacy_hmm_artifacts(
     *,
     detected_notes: list[dict[str, Any]],
@@ -418,10 +451,15 @@ def _build_legacy_hmm_artifacts(
     (voicing.py, rhythm.py, intonation.py, score_map.py, agent_tools/*) keep
     working unchanged while we delete the old HMM pipeline.
 
+    Each note is run through _enrich_for_legacy_consumers so the historical
+    field names (score_time_in_movement, score_time_local, obs_log_prob,
+    expected_pitch) are present alongside the modern ones.
+
     Returns ``(aligned_notes_doc, alignment_doc)`` matching the historical
     shape of ``analysis/hmm_aligned_notes.json`` and ``analysis/hmm_alignment.json``.
     """
-    notes_for_shim = matched_notes or detected_notes
+    raw_for_shim = matched_notes or detected_notes
+    notes_for_shim = [_enrich_for_legacy_consumers(n) for n in raw_for_shim]
     # bar_starts: for each measure mentioned in the matched notes, the first
     # performed_time_sec for that measure. Sorted by measure so the legacy
     # consumers can iterate in order.
@@ -444,9 +482,14 @@ def _build_legacy_hmm_artifacts(
         }
         for m, t in sorted(by_measure.items())
     ]
+    # measure_timestamps: rhythm.py reads this as {measure_number: start_time}
+    # mapping. Mirror it from bar_starts so rhythm picks it up without code
+    # change.
+    measure_timestamps = {str(b["measure"]): b["performed_time_sec"] for b in bar_starts}
     music_start = bar_starts[0]["performed_time_sec"] if bar_starts else (
         notes_for_shim[0].get("performed_time_sec", 0.0) if notes_for_shim else 0.0
     )
+    played_measures = sorted(by_measure.keys())
     aligned_notes_doc = {
         "schema_version": 1,
         "notes": notes_for_shim,
@@ -461,6 +504,9 @@ def _build_legacy_hmm_artifacts(
             "n_states": len(notes_for_shim),
             "note_count": len(notes_for_shim),
             "tempo_factor_perf_over_midi": 1.0,
+            "played_measures": played_measures,
+            "effective_first_measure": played_measures[0] if played_measures else None,
+            "effective_last_measure": played_measures[-1] if played_measures else None,
             "method_notes": [
                 "Legacy HMM-shaped artifact synthesized from audio_truth output.",
                 "Underlying transcriber: " + method,
@@ -468,6 +514,7 @@ def _build_legacy_hmm_artifacts(
             ],
         },
         "bar_starts": bar_starts,
+        "measure_timestamps": measure_timestamps,
         "notes": notes_for_shim,
         "note_alignments": notes_for_shim,
         "measure_count": len(bar_starts),

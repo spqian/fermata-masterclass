@@ -395,8 +395,9 @@ def create_app():
 
     def _spawn(target, *args) -> None:
         """Run a background job in a real OS thread so multiple jobs run in parallel.
-        FastAPI's BackgroundTasks runs handlers sequentially, which causes deadlocks
-        when one task waits for another (e.g. score_prep waiting for midi_find)."""
+        FastAPI's BackgroundTasks runs handlers sequentially, which can starve
+        independent tasks (e.g. score_prep should not block the lesson upload
+        response)."""
         import threading
         threading.Thread(target=target, args=args, daemon=True).start()
 
@@ -412,18 +413,10 @@ def create_app():
                 manifest.metadata["score_prep_updated_at"] = datetime.now(UTC).isoformat()
                 masterclasses.save(manifest)
                 return
-            # Wait briefly for MIDI find to land so the score-prep MIDI cross-check
-            # can validate measure counts. MIDI find usually finishes in <15s; we
-            # cap the wait at 90s and proceed regardless after that.
-            import time as _time
-            wait_deadline = _time.time() + 90
-            while _time.time() < wait_deadline:
-                refreshed = masterclasses.load_by_id(ctx, masterclass_id)
-                state = refreshed.metadata.get("midi_find_state", "queued")
-                if "reference/midi" in refreshed.artifacts or state in ("ready", "failed", "not_found", "skipped", "skipped_user_upload"):
-                    manifest = refreshed
-                    break
-                _time.sleep(2)
+            # score_prep used to wait up to 90s for the Gemini midi_finder to
+            # land so it could cross-check measure counts. midi_finder is
+            # removed (audio-truth reads MusicXML directly from Audiveris),
+            # so the wait would always time out; just proceed.
             prepare_score(
                 storage=storage,
                 masterclass_store=masterclasses,
