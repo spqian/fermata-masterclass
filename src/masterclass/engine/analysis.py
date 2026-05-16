@@ -220,6 +220,13 @@ def _region(time_sec: float, score: float, label: str) -> dict[str, Any]:
 
 
 def analysis_markdown(analysis: dict[str, Any]) -> str:
+    """Render the global-audio summary as markdown for the analysis.md artifact.
+
+    Used to also include a 'Performed pitch events' section sourced from
+    librosa.pyin, but that data is no longer relied on for teaching - the
+    score-matched audio-truth notes in audio_truth_matched_notes.json are
+    a better source. See build_evidence_packet().
+    """
     lines = [
         f"# Analysis - {analysis.get('repertoire') or 'Untitled'}",
         "",
@@ -239,12 +246,61 @@ def analysis_markdown(analysis: dict[str, Any]) -> str:
         lines.append(f"### {name.replace('_', ' ').title()}")
         for row in rows:
             lines.append(f"- `{row.get('start_sec')}-{row.get('end_sec')}s`: {row.get('label', name)} score `{row.get('score')}`")
-    pitch = analysis.get("performed_pitch_events", {})
-    lines.append("")
-    lines.append(f"## Performed pitch events: `{pitch.get('count')}`")
-    for event in pitch.get("preview_first_40", [])[:12]:
-        lines.append(f"- `{event['start_sec']}-{event['end_sec']}s` {event.get('note')} {event.get('median_cents_from_equal_temperament')}c ({event.get('confidence')})")
     return "\n".join(lines)
+
+
+def _audio_truth_pitch_rows(storage: ObjectStorage, manifest: SessionManifest, limit: int | None = 40) -> list[dict[str, Any]]:
+    """Return per-note rows derived from analysis/audio_truth_matched_notes.json
+    suitable for embedding in the evidence packet markdown.
+
+    Each row carries the score-expected pitch, the detected pitch, the
+    cents-from-score deviation, the measure/beat, and the match status.
+    These are the same notes the technical viewer shows; using them here
+    is what closes the "teacher reasons over CREPE while user reasons over
+    audio-truth" inconsistency that drove the 'is the C sharp' hallucination.
+    """
+    key = manifest.artifacts.get("analysis/audio_truth_matched_notes.json")
+    if not key:
+        return []
+    try:
+        doc = storage.read_json(key)
+    except (FileNotFoundError, ValueError):
+        return []
+    notes = doc.get("notes") or []
+    rows: list[dict[str, Any]] = []
+    NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    for n in notes:
+        if not isinstance(n, dict):
+            continue
+        pitches = n.get("pitches_midi") or []
+        if not pitches:
+            continue
+        detected = int(pitches[0])
+        score_pitch = n.get("score_midi_pitch")
+        cents_off_score = None
+        if score_pitch is not None:
+            # If detected and matched score pitch differ by a semitone we report
+            # the literal semitone offset times 100c; the teacher needs to see
+            # WRONG-NOTE mismatches as clearly as in-tune-but-imprecise.
+            cents_off_score = round((detected - int(score_pitch)) * 100.0, 1)
+        det_name = f"{NAMES[detected % 12]}{detected // 12 - 1}"
+        rows.append({
+            "start_sec": round(float(n.get("performed_time_sec", n.get("perf_time", 0.0))), 3),
+            "duration_sec": round(float(n.get("dwell_sec", n.get("expected_perf_duration", 0.0))), 3),
+            "detected_note": det_name,
+            "detected_midi": detected,
+            "score_note": f"{NAMES[int(score_pitch) % 12]}{int(score_pitch) // 12 - 1}" if score_pitch is not None else None,
+            "cents_off_score": cents_off_score,
+            "measure": n.get("measure"),
+            "staff": n.get("staff_index"),
+            "matched": bool(n.get("matched")),
+            "confidence": n.get("confidence"),
+            "timing_offset_ms": n.get("timing_offset_ms"),
+        })
+    rows.sort(key=lambda r: r["start_sec"])
+    if limit is not None:
+        return rows[:limit]
+    return rows
 
 
 def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manifest: SessionManifest) -> SessionManifest:
@@ -266,6 +322,33 @@ def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manife
         "",
         storage.read_bytes(manifest.artifacts["analysis/analysis.md"]).decode("utf-8"),
     ]
+    # Per-note audio-truth rows. We deliberately do NOT include the older
+    # CREPE pitch_events.json here -- it produced confidence-laden monophonic
+    # blobs that the teacher misread as intonation evidence. The audio-truth
+    # rows below are score-anchored: each row tells the teacher exactly what
+    # note was played, what the score expected, and the deviation.
+    at_rows = _audio_truth_pitch_rows(storage, manifest, limit=80)
+    if at_rows:
+        lines.extend([
+            "",
+            f"## Audio-truth notes (first {len(at_rows)}, score-matched)",
+            "",
+            "Each row is one detected note matched against the reference score. `cents_off_score` is the literal MIDI-semitone difference between the detected pitch and the score pitch (so +100 = a full semitone sharp, often a wrong-note mistake; +35 = a sharp intonation reading; ±10 ≈ in tune). `timing_offset_ms` is detected-onset minus score-time (positive = late).",
+            "",
+        ])
+        for r in at_rows:
+            score_part = f" vs score {r['score_note']}" if r['score_note'] else " (unmatched)"
+            cents_part = ""
+            if r["cents_off_score"] is not None:
+                cents_part = f" cents_off_score={r['cents_off_score']:+.1f}c"
+            timing_part = ""
+            if r["timing_offset_ms"] is not None:
+                timing_part = f" timing={r['timing_offset_ms']:+.0f}ms"
+            measure_part = f" m.{r['measure']}" if r['measure'] is not None else ""
+            staff_part = f" staff={r['staff']}" if r['staff'] is not None else ""
+            lines.append(
+                f"- `{r['start_sec']:.3f}s` {r['detected_note']}{score_part}{cents_part}{timing_part}{measure_part}{staff_part} dur={r['duration_sec']:.2f}s conf={r['confidence']}"
+            )
     if "analysis/piano_voicing.json" in manifest.artifacts:
         voicing = storage.read_json(manifest.artifacts["analysis/piano_voicing.json"])
         global_summary = voicing.get("summary", {}).get("global", {})

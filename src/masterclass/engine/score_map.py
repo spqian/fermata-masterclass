@@ -605,16 +605,11 @@ def _build_notes(
 
 
 def _load_hmm_notes(storage: ObjectStorage, manifest: SessionManifest) -> list[dict[str, Any]]:
-    key = manifest.artifacts.get("analysis/hmm_aligned_notes.json")
-    if key and storage.exists(key):
-        data = storage.read_json(key)
-        notes = data.get("notes") if isinstance(data, dict) else data
-        return [note for note in notes or [] if isinstance(note, dict)]
-    key = manifest.artifacts.get("analysis/hmm_alignment.json")
-    if key and storage.exists(key):
-        data = storage.read_json(key)
-        return [note for note in data.get("note_alignments") or [] if isinstance(note, dict)]
-    return []
+    """Score_map's per-note source. Was a direct read of the HMM artifacts;
+    now reads the unified aligned-notes accessor which prefers
+    audio_truth_matched_notes.json."""
+    from masterclass.engine.aligned_notes import load_aligned_notes
+    return load_aligned_notes(storage, manifest)
 
 
 def _hmm_lookups(

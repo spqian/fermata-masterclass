@@ -1510,6 +1510,40 @@ def create_app():
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         return summary
 
+    @app.post("/lessons/{session_id}/rerun")
+    def rerun_lesson_pipeline(
+        session_id: str,
+        ctx: TenantContext = Depends(tenant_from_header),
+    ) -> dict:
+        """Re-run the full lesson background pipeline for an existing session.
+
+        Use after a code update (e.g. the audio-truth refactor) to re-process
+        a lesson with the latest engine. Idempotent: each stage rebuilds its
+        artifact. Spawns the same _run_lesson_jobs thread the upload flow
+        spawns.
+        """
+        manifest = store.load_by_id(ctx, session_id)
+        masterclass_id = manifest.metadata.get("masterclass_id")
+        # Reset stale "running" markers so the UI starts polling fresh.
+        for stage_state in (
+            "extract_media_state", "analyze_state", "evidence_packet_state",
+            "onsets_state", "audio_truth_state", "score_map_state",
+            "intonation_state", "rhythm_state", "voicing_state",
+            "mechanical_comments_state", "teach_state",
+        ):
+            if manifest.metadata.get(stage_state) == "running":
+                manifest.metadata[stage_state] = "requeued"
+        manifest.state = JobState.UPLOADED
+        store.save(manifest)
+        _spawn(
+            _run_lesson_jobs,
+            manifest.session.session_id,
+            manifest.session.tenant_id,
+            manifest.session.user_id,
+            masterclass_id,
+        )
+        return {"session_id": session_id, "requeued": True, "state": manifest.state.value}
+
     @app.post("/lessons/{session_id}/chat")
     def lesson_chat(session_id: str, body: ChatRequest = Body(...), ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         try:

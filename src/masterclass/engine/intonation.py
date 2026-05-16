@@ -58,19 +58,10 @@ def analyze_intonation(
     if not audio_key:
         raise ValueError("manifest is missing artifacts/audio.wav; run ingestion first")
 
-    notes_key = manifest.artifacts.get("analysis/hmm_aligned_notes.json")
-    if not notes_key:
-        candidate = store.artifact_key(manifest.session, "analysis/hmm_aligned_notes.json")
-        if storage.exists(candidate):
-            notes_key = candidate
-    if not notes_key or not storage.exists(notes_key):
-        raise ValueError("manifest is missing analysis/hmm_aligned_notes.json; run HMM alignment first")
-
-    notes_payload = storage.read_json(notes_key)
-    aligned_notes = notes_payload if isinstance(notes_payload, list) else notes_payload.get("notes", [])
-    aligned_notes = list(aligned_notes)
+    from masterclass.engine.aligned_notes import load_aligned_notes
+    aligned_notes = list(load_aligned_notes(storage, manifest))
     if not aligned_notes:
-        raise RuntimeError("HMM aligned notes artifact contains no notes")
+        raise RuntimeError("no aligned notes available for intonation analysis (audio_truth pipeline must run first)")
 
     with tempfile.TemporaryDirectory(prefix="mc-intonation-") as tmp_raw:
         audio_path = Path(tmp_raw) / "audio.wav"

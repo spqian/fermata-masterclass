@@ -34,12 +34,35 @@ def inspect_bar(storage: ObjectStorage, session: SessionRef, args: dict[str, Any
     outliers = [o for o in rhy.get("summary", {}).get("off_pulse_outliers", []) if int(o.get("measure", -999)) == midi_measure]
     if outliers:
         out["off_pulse_outliers"] = outliers
-    hmm = read_json(storage, session, "analysis/hmm_alignment.json", {}) or {}
-    ps = bar.get("perf_start_sec", bar.get("performed_start_sec")); pe = bar.get("perf_end_sec", bar.get("performed_end_sec"))
-    if ps is not None and pe is not None:
-        out["hmm_notes"] = [n for n in hmm.get("note_alignments", []) if float(ps) - 0.2 <= float(n.get("performed_time_sec", -1)) <= float(pe) + 0.2]
+    # Audio-truth: the per-note timeline. Filter by measure so the teacher
+    # sees only the notes inside this bar. The shape carries detected vs
+    # score-expected pitch, timing offsets, and matched/unmatched status -
+    # everything inspect_bar used to read from hmm.note_alignments plus the
+    # score-matched cents-off-score field.
+    audio_truth = read_json(session_storage_aware(storage), session, "analysis/audio_truth_matched_notes.json", {}) or {}
+    if not audio_truth:
+        audio_truth = read_json(session_storage_aware(storage), session, "analysis/audio_truth_notes.json", {}) or {}
+    audio_notes = audio_truth.get("notes") if isinstance(audio_truth, dict) else None
+    ps = bar.get("perf_start_sec", bar.get("performed_start_sec"))
+    pe = bar.get("perf_end_sec", bar.get("performed_end_sec"))
+    if audio_notes and ps is not None and pe is not None:
+        in_bar = [
+            n for n in audio_notes
+            if isinstance(n, dict)
+            and (int(n.get("measure") or -999) == midi_measure
+                 or (float(ps) - 0.2 <= float(n.get("performed_time_sec", n.get("perf_time", -1))) <= float(pe) + 0.2))
+        ]
+        if in_bar:
+            out["audio_truth_notes"] = in_bar
         ro = read_json(storage, session, "analysis/rich_onsets.json", {}) or {}
         ons = [o for o in ro.get("onsets", []) if float(ps) <= float(o.get("time", o.get("time_sec", -999))) <= float(pe)]
         if ons:
             out["rich_onsets"] = ons
     return out
+
+
+# Compat shim: read_json takes a storage and a session; the upstream helper
+# already does the right thing, this just keeps the inspect_bar signature
+# self-explanatory after the rename.
+def session_storage_aware(storage):  # pragma: no cover - trivial passthrough
+    return storage

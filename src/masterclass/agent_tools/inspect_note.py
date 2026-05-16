@@ -20,11 +20,39 @@ def inspect_note(storage: ObjectStorage, session: SessionRef, args: dict[str, An
         return {"error": f"no note at m{midi_measure} beat={beat} pitch={pitch}"}
     out: dict[str, Any] = {"score_map_note": note}
     st = note_score_time(note)
-    hmm = read_json(storage, session, "analysis/hmm_alignment.json", {}) or {}
-    if st is not None:
-        match = next((n for n in hmm.get("note_alignments", []) if abs(float(n.get("score_time_in_movement", n.get("score_time_local", -1))) - st) < 0.01), None)
+    # Audio-truth match: find the detected note whose matched score-time
+    # closest matches the requested score-time. The matcher stores the
+    # score time the note was matched against under score_time_sec; legacy
+    # consumers also looked under score_time_in_movement / score_time_local
+    # which the shim aliases.
+    at = read_json(storage, session, "analysis/audio_truth_matched_notes.json", {}) or {}
+    if not at:
+        at = read_json(storage, session, "analysis/audio_truth_notes.json", {}) or {}
+    at_notes = at.get("notes") if isinstance(at, dict) else None
+    if at_notes and st is not None:
+        # Prefer matched-by-measure-and-pitch; fall back to nearest-score-time.
+        target_pitch = note.get("pitch_midi") or note.get("midi_pitch")
+        match = None
+        for n in at_notes:
+            if not isinstance(n, dict):
+                continue
+            if int(n.get("measure") or -999) != midi_measure:
+                continue
+            score_t = n.get("score_time_sec") or n.get("score_time_in_movement")
+            if score_t is None or abs(float(score_t) - st) > 0.05:
+                continue
+            if target_pitch is not None and n.get("score_midi_pitch") is not None:
+                if int(n["score_midi_pitch"]) != int(target_pitch):
+                    continue
+            match = n
+            break
         if match:
-            out["hmm"] = {k: match.get(k) for k in ("performed_time_sec", "dwell_sec", "obs_log_prob", "confidence", "names", "state_idx")}
+            out["audio_truth"] = {k: match.get(k) for k in (
+                "performed_time_sec", "dwell_sec", "amplitude", "confidence",
+                "names", "pitches_midi", "state_idx",
+                "score_time_sec", "score_midi_pitch", "timing_offset_ms",
+                "matched", "staff_index",
+            ) if k in match}
     intn = read_json(storage, session, "analysis/polyphonic_intonation.json", {}) or {}
     rows = intn.get("rows") or intn.get("events") or []
     if st is not None:

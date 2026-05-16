@@ -482,10 +482,14 @@ def _build_legacy_hmm_artifacts(
         }
         for m, t in sorted(by_measure.items())
     ]
-    # measure_timestamps: rhythm.py reads this as {measure_number: start_time}
-    # mapping. Mirror it from bar_starts so rhythm picks it up without code
-    # change.
-    measure_timestamps = {str(b["measure"]): b["performed_time_sec"] for b in bar_starts}
+    # measure_timestamps: rhythm.py reads this as a list of {measure, start}
+    # dicts (NOT a dict-of-floats -- that breaks _normalized_measures which
+    # iterates assuming each row exposes .get). Mirror bar_starts in that
+    # exact shape so rhythm picks it up without code change.
+    measure_timestamps = [
+        {"measure": b["measure"], "start": b["performed_time_sec"]}
+        for b in bar_starts
+    ]
     music_start = bar_starts[0]["performed_time_sec"] if bar_starts else (
         notes_for_shim[0].get("performed_time_sec", 0.0) if notes_for_shim else 0.0
     )

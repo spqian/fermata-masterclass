@@ -59,22 +59,38 @@ def analyze_rhythm(
     del store
     config = config or RhythmConfig()
 
-    align_key = manifest.artifacts.get("analysis/hmm_alignment.json")
-    notes_key = manifest.artifacts.get("analysis/hmm_aligned_notes.json")
-    if not align_key or not storage.exists(align_key):
-        raise ValueError("missing analysis/hmm_alignment.json; run HMM alignment first")
-    if not notes_key or not storage.exists(notes_key):
-        raise ValueError("missing analysis/hmm_aligned_notes.json; run HMM alignment first")
-
-    alignment = storage.read_json(align_key)
-    notes_doc = storage.read_json(notes_key)
-    aligned_notes = _normalized_notes(notes_doc.get("notes") or alignment.get("note_alignments") or [])
+    # Read everything we need through the unified aligned-notes accessor
+    # (audio_truth_matched_notes.json preferred, with hmm shim as fallback)
+    # and derive bar starts directly from matched notes' measure numbers.
+    # The historical hmm_alignment.json bar_starts had loudness/expected_t
+    # fields the old rhythm refinement read; we don't have those equivalents
+    # in the audio-truth output yet, so any code path that consumed them
+    # will silently fall back to its first_visited_pitches-empty default.
+    from masterclass.engine.aligned_notes import load_aligned_notes, load_measure_starts
+    raw_aligned = load_aligned_notes(storage, manifest)
+    aligned_notes = _normalized_notes(raw_aligned)
     if len(aligned_notes) < 2:
-        raise RuntimeError("HMM alignment has too few aligned notes for rhythm analysis")
+        raise RuntimeError("no aligned notes available for rhythm analysis (audio_truth pipeline must run first)")
 
-    measures = _normalized_measures(alignment.get("measure_timestamps") or alignment.get("bar_starts") or [])
+    measure_rows = load_measure_starts(storage, manifest)
+    measures = _normalized_measures(measure_rows)
     if not measures:
-        raise RuntimeError("HMM alignment has no measure timestamps")
+        raise RuntimeError("no measure starts derivable from aligned notes")
+    # Synthesise the minimal `alignment` shape downstream helpers expect.
+    # bar_starts mirror measures; summary holds played_measures + music_start
+    # so existing helpers that .get() those still work.
+    played = sorted({int(m["measure"]) for m in measures})
+    alignment = {
+        "bar_starts": measure_rows,
+        "measure_timestamps": measure_rows,
+        "summary": {
+            "method": "audio_truth_first_note",
+            "music_start_sec": float(measures[0]["start"]),
+            "played_measures": played,
+            "effective_first_measure": played[0],
+            "effective_last_measure": played[-1],
+        },
+    }
     rich_onsets = _load_rich_onsets(storage, manifest)
     music_start_sec = _music_start_sec(rich_onsets, alignment, measures, config)
 

@@ -52,9 +52,6 @@ def analyze_voicing(
 
     del store  # Artifact keys are read from the manifest in the analysis step.
     config = config or VoicingConfig()
-    notes_key = manifest.artifacts.get("analysis/hmm_aligned_notes.json")
-    if not notes_key:
-        raise ValueError("manifest is missing analysis/hmm_aligned_notes.json; run HMM alignment first")
     audio_key = manifest.artifacts.get("artifacts/audio.wav")
     if not audio_key:
         raise ValueError("manifest is missing artifacts/audio.wav; run ingestion first")
@@ -62,10 +59,10 @@ def analyze_voicing(
     import librosa
     import numpy as np
 
-    aligned = storage.read_json(notes_key)
-    notes = _normalized_aligned_notes(aligned.get("notes", aligned))
+    from masterclass.engine.aligned_notes import load_aligned_notes
+    notes = _normalized_aligned_notes(load_aligned_notes(storage, manifest))
     if not notes:
-        raise RuntimeError("analysis/hmm_aligned_notes.json contains no aligned notes")
+        raise RuntimeError("no aligned notes available for voicing analysis (audio_truth pipeline must run first)")
 
     measure_starts = _measure_starts_from_manifest(storage, manifest)
     audio_bytes = io.BytesIO(storage.read_bytes(audio_key))
