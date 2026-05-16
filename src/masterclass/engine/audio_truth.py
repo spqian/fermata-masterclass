@@ -184,6 +184,132 @@ def transcribe(*, storage: ObjectStorage, manifest: SessionManifest) -> tuple[st
 # ---------------------------------------------------------------------------
 # Score matching (audio-truth notes -> score-anchored notes with staff/voice)
 # ---------------------------------------------------------------------------
+def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
+    """Extract note events from a MusicXML (.xml/.musicxml) or MXL (.mxl) file.
+
+    Returns the same shape as :func:`_load_score_notes` so the matcher can
+    consume either source interchangeably. Wall-clock time is derived from
+    metronome marks (``<sound tempo="...">``) -- when MusicXML has no tempo
+    annotation, defaults to 120 qpm (the matcher's EMA lag tracker absorbs
+    moderate tempo error anyway since it follows the actual performance).
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    # MXL files are zip archives containing one or more .xml documents.
+    if zipfile.is_zipfile(io.BytesIO(xml_bytes)):
+        with zipfile.ZipFile(io.BytesIO(xml_bytes)) as archive:
+            xml_names = [
+                name for name in archive.namelist()
+                if name.lower().endswith((".xml", ".musicxml")) and "container.xml" not in name.lower()
+            ]
+            if not xml_names:
+                raise ValueError("MXL archive contains no MusicXML document")
+            xml_bytes = archive.read(xml_names[0])
+
+    root = ET.fromstring(xml_bytes)
+    out: list[dict[str, Any]] = []
+    # The MusicXML <part> element groups all measures for one staff system.
+    # In a piano score there's usually one <part> with two <staff> entries
+    # inside each <note> for treble/bass; in a violin score there's one
+    # <part> with one staff. We tag each note with its part index AND staff
+    # number so multi-part scores work too.
+    parts = [el for el in root.iter() if _local(el.tag) == "part"]
+    for part_idx, part in enumerate(parts):
+        divisions_per_qtr = 1
+        tempo_qpm = 120.0
+        current_time_qtr = 0.0  # cumulative time in quarter notes within the part
+        measure_number = 0
+        for measure in (m for m in list(part) if _local(m.tag) == "measure"):
+            measure_number = int(measure.get("number") or measure_number + 1)
+            cursor_qtr = current_time_qtr  # position within this measure for the active "voice"
+            voice_cursors: dict[str, float] = {}
+            for el in list(measure):
+                tag = _local(el.tag)
+                if tag == "attributes":
+                    for child in list(el):
+                        if _local(child.tag) == "divisions" and child.text:
+                            divisions_per_qtr = int(child.text) or 1
+                elif tag == "direction":
+                    for sound in (s for s in el.iter() if _local(s.tag) == "sound"):
+                        if sound.get("tempo"):
+                            try:
+                                tempo_qpm = float(sound.get("tempo"))
+                            except (TypeError, ValueError):
+                                pass
+                elif tag == "sound" and el.get("tempo"):
+                    try:
+                        tempo_qpm = float(el.get("tempo"))
+                    except (TypeError, ValueError):
+                        pass
+                elif tag == "backup":
+                    dur_el = next((c for c in list(el) if _local(c.tag) == "duration"), None)
+                    if dur_el is not None and dur_el.text:
+                        cursor_qtr -= int(dur_el.text) / divisions_per_qtr
+                elif tag == "forward":
+                    dur_el = next((c for c in list(el) if _local(c.tag) == "duration"), None)
+                    if dur_el is not None and dur_el.text:
+                        cursor_qtr += int(dur_el.text) / divisions_per_qtr
+                elif tag == "note":
+                    is_rest = any(_local(c.tag) == "rest" for c in list(el))
+                    is_chord = any(_local(c.tag) == "chord" for c in list(el))
+                    is_grace = any(_local(c.tag) == "grace" for c in list(el))
+                    dur_el = next((c for c in list(el) if _local(c.tag) == "duration"), None)
+                    dur_qtr = (int(dur_el.text) / divisions_per_qtr) if (dur_el is not None and dur_el.text) else 0.0
+                    voice_el = next((c for c in list(el) if _local(c.tag) == "voice"), None)
+                    voice = voice_el.text if (voice_el is not None and voice_el.text) else "1"
+                    staff_el = next((c for c in list(el) if _local(c.tag) == "staff"), None)
+                    staff_index = (int(staff_el.text) - 1) if (staff_el is not None and staff_el.text and staff_el.text.isdigit()) else part_idx
+                    pitch_el = next((c for c in list(el) if _local(c.tag) == "pitch"), None)
+                    if pitch_el is not None and not is_rest:
+                        step_el = next((c for c in list(pitch_el) if _local(c.tag) == "step"), None)
+                        alter_el = next((c for c in list(pitch_el) if _local(c.tag) == "alter"), None)
+                        octave_el = next((c for c in list(pitch_el) if _local(c.tag) == "octave"), None)
+                        if step_el is not None and octave_el is not None and step_el.text and octave_el.text:
+                            step_to_pc = {"C":0,"D":2,"E":4,"F":5,"G":7,"A":9,"B":11}
+                            pc = step_to_pc.get(step_el.text.upper(), 0)
+                            alter = int(alter_el.text) if (alter_el is not None and alter_el.text) else 0
+                            octave = int(octave_el.text)
+                            midi = 12 * (octave + 1) + pc + alter
+                            # Chord notes share the start time of the previous note (don't advance cursor).
+                            note_start_qtr = cursor_qtr
+                            score_time_sec = (note_start_qtr * 60.0) / tempo_qpm
+                            out.append({
+                                "score_time_sec": score_time_sec,
+                                "midi_pitch": int(midi),
+                                "staff_index": staff_index,
+                                "track_name": f"part{part_idx}_voice{voice}_staff{staff_index}",
+                                "duration_sec": (dur_qtr * 60.0) / tempo_qpm,
+                                "measure": measure_number,
+                            })
+                    if not is_chord and not is_grace:
+                        cursor_qtr += dur_qtr
+            current_time_qtr = cursor_qtr
+    out.sort(key=lambda x: (x["score_time_sec"], x["midi_pitch"]))
+    return out
+
+
+def _load_score_notes_auto(storage: ObjectStorage, manifest: SessionManifest) -> tuple[str, list[dict[str, Any]]]:
+    """Load score notes from MusicXML if available, otherwise from MIDI.
+
+    Returns ``(source_label, notes)``. Prefers MusicXML because it has
+    richer per-note metadata (voice, beam groups) and because the audio-
+    truth simplification roadmap moves us off MIDI entirely. Old lessons
+    that only have the Gemini-found MIDI keep working via the fallback.
+    """
+    for key_name in ("masterclass/reference/musicxml.musicxml", "masterclass/reference/musicxml.mxl"):
+        key = manifest.artifacts.get(key_name)
+        if key and storage.exists(key):
+            return "musicxml", _load_score_notes_from_musicxml(storage.read_bytes(key))
+    midi_key = manifest.artifacts.get("masterclass/reference/midi")
+    if midi_key and storage.exists(midi_key):
+        return "midi", _load_score_notes(storage.read_bytes(midi_key))
+    return "none", []
+
+
 def _load_score_notes(midi_bytes: bytes) -> list[dict[str, Any]]:
     import pretty_midi
     pm = pretty_midi.PrettyMIDI(io.BytesIO(midi_bytes))
@@ -313,14 +439,15 @@ def run_audio_truth_pipeline(
 
     midi_key = manifest.artifacts.get("masterclass/reference/midi")
     matched_count = 0
-    if midi_key and storage.exists(midi_key):
-        score_notes = _load_score_notes(storage.read_bytes(midi_key))
+    score_source, score_notes = _load_score_notes_auto(storage, manifest)
+    if score_notes:
         enriched = match_to_score(notes, score_notes)
         matched_count = sum(1 for n in enriched if n.get("matched"))
         matched_key = store.artifact_key(manifest.session, "analysis/audio_truth_matched_notes.json")
         storage.write_json(matched_key, {
             "schema_version": 1,
             "method": f"{method}_score_matched",
+            "score_source": score_source,
             "match_rate": round(matched_count / max(1, len(enriched)), 3),
             "notes": enriched,
             "summary": {
@@ -332,13 +459,14 @@ def run_audio_truth_pipeline(
         })
         manifest.artifacts["analysis/audio_truth_matched_notes.json"] = matched_key
     else:
-        _LOG.warning("no reference MIDI on lesson %s; skipping score-match step",
+        _LOG.warning("no reference score (MusicXML or MIDI) on lesson %s; skipping score-match step",
                      manifest.session.session_id)
 
     store.save(manifest)
     return {
         "method": method,
+        "score_source": score_source,
         "notes": len(notes),
         "matched": matched_count,
-        "has_score_match": bool(midi_key),
+        "has_score_match": bool(score_notes),
     }

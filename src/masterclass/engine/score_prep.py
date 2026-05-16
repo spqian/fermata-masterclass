@@ -225,6 +225,22 @@ def prepare_score(
 
             _mark_substage("running Audiveris OMR on PDF")
             xml_bytes, audiveris_meta = audiveris_pdf_to_musicxml(pdf_bytes, page_dpi=config.page_dpi)
+            # Persist the raw MusicXML so the audio-truth score-matcher (and
+            # any future consumer that wants per-note information) can read it
+            # without re-running Audiveris. This unblocks dropping the
+            # Gemini-driven MIDI search: the matcher reads MusicXML directly,
+            # which has strictly more information than MIDI (voice numbers,
+            # beam groups, dynamics, articulations).
+            try:
+                xml_filename = audiveris_meta.get("output_filename") or "audiveris.musicxml"
+                xml_ext = ".mxl" if str(xml_filename).lower().endswith(".mxl") else ".musicxml"
+                xml_content_type = "application/vnd.recordare.musicxml+zip" if xml_ext == ".mxl" else "application/vnd.recordare.musicxml+xml"
+                xml_key = masterclass_store.artifact_key(manifest.masterclass, f"reference/musicxml{xml_ext}")
+                storage.write_bytes(xml_key, xml_bytes, content_type=xml_content_type)
+                manifest.artifacts[f"reference/musicxml{xml_ext}"] = xml_key
+                manifest.metadata["score_prep_musicxml_bytes"] = len(xml_bytes)
+            except Exception as _xml_err:  # pragma: no cover - best-effort, layout below still works
+                logging.warning("Failed to persist MusicXML artifact: %s", _xml_err)
             _mark_substage("converting MusicXML to score_prep layout")
             prep = score_prep_from_musicxml(xml_bytes, page_images=page_images, instrument=manifest.instrument)
             prep["_meta"] = {"source": "audiveris", **audiveris_meta, **(prep.get("_meta") or {})}
