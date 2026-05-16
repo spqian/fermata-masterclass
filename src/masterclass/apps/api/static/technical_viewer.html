@@ -77,6 +77,14 @@
     table.notes th { color:var(--ink-mute); font-weight:500; letter-spacing:.08em; text-transform:uppercase; font-size:10px; }
     table.notes tr.highlight td { background:rgba(201,169,106,.08); }
     .conf-low { color:var(--warn); } .conf-medium { color:var(--accent); } .conf-high { color:var(--good); }
+    /* Native audio player styled to match the dark theme. Chrome respects
+       color-scheme: dark and accent-color so we don't have to rebuild it. */
+    .audio-player { display:flex; align-items:center; gap:12px; background:rgba(0,0,0,.32); border:1px solid var(--panel-edge); border-radius:6px; padding:10px 12px; margin:10px 0; flex-wrap:wrap; }
+    .audio-player audio { flex:1 1 360px; min-width:0; height:36px; accent-color:var(--gold); color-scheme:dark; }
+    .audio-player .audio-meta { font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--ink-mute); white-space:nowrap; }
+    .audio-player .audio-buttons { display:flex; gap:6px; }
+    .audio-player .audio-buttons button { padding:6px 10px; font-size:11px; }
+    .audio-player .audio-buttons button.ghost { padding:5px 9px; }
     .spec-wrap { position:relative; }
     .spec-wrap .spec-img { cursor:crosshair; }
     .spec-tooltip { position:absolute; pointer-events:none; background:rgba(11,13,18,.95); border:1px solid var(--gold); color:var(--ink); padding:8px 10px; border-radius:4px; font-family:"JetBrains Mono",monospace; font-size:11px; line-height:1.55; box-shadow:0 4px 14px rgba(0,0,0,.6); transform:translate(-50%, -110%); white-space:nowrap; display:none; z-index:30; }
@@ -380,24 +388,76 @@
     document.getElementById("focus-badge").textContent = `${formatTime(c.start)} → ${formatTime(c.end)} · m.${c.measure ?? "?"}`;
     const refs = (c.references || []).map(r => escapeHtml(String(r))).join("<br>") || "<em>(no references)</em>";
     const prov = (c.provenance || []).map(p => `<code>${escapeHtml(String(p))}</code>`).join(" ") || "<em>(no provenance)</em>";
+    const start = Math.max(0, c.start ?? 0);
+    const end = c.end ?? start + 3;
     body.innerHTML = `
       <div class="focus-box">
         <div class="label">${escapeHtml(c.severity || "info")} · ${escapeHtml(c.category || "")} · confidence=${escapeHtml(c.confidence || "?")}</div>
         <div class="body"><strong>${escapeHtml(c.summary || "")}</strong><br><em>${escapeHtml(c.text || "")}</em></div>
       </div>
-      <div class="audio-row" id="audio-row"></div>
+      <div class="audio-player">
+        <div class="audio-buttons">
+          <button id="play-comment-range" title="Play just this comment's time range">▶ Play range</button>
+          <button class="ghost" id="play-from-start" title="Seek to comment start, play to end of file">⟲ Seek</button>
+        </div>
+        <audio id="audio-player" controls preload="metadata" src="/lessons/${encodeURIComponent(SESSION_ID)}/video"></audio>
+        <div class="audio-meta">range <span id="audio-range">${formatTime(start)} – ${formatTime(end)}</span></div>
+      </div>
       <div style="font-size:12px; color:var(--ink-mute); margin-bottom:6px;">PROVENANCE: ${prov}</div>
       <div style="font-size:11px; color:var(--ink-mute); font-family:'JetBrains Mono',monospace;">REFERENCES:<br>${refs}</div>
     `;
-    // Audio chunk player — server already serves the full audio, the <audio> element
-    // can seek to the comment's time window.
-    const start = Math.max(0, (c.start ?? 0) - 0.3);
-    const end = (c.end ?? start + 3) + 0.3;
-    body.querySelector("#audio-row").innerHTML = `
-      <button id="play-clip">▶ Play ${(end - start).toFixed(1)}s clip</button>
-      <span style="font-size:11px;color:var(--ink-mute);">${formatTime(start)} – ${formatTime(end)}</span>
-    `;
-    body.querySelector("#play-clip").addEventListener("click", () => playClip(start, end));
+    bindAudioPlayer(start, end);
+  }
+
+  // Range-playback state: when the user hits "Play range" we record the stop
+  // time and a setInterval polls audio.currentTime to pause at exactly end.
+  // The native controls' play/pause/scrubber still work; they just don't
+  // auto-stop at the range boundary (intentional - lets you keep scrubbing).
+  let rangeStopAt = null;
+  let rangeStopHandle = null;
+  function bindAudioPlayer(rangeStart, rangeEnd) {
+    const audio = document.getElementById("audio-player");
+    if (!audio) return;
+    activeAudio = audio;                    // playhead loop reads this
+    // Seek to the start of the comment range once the audio's metadata loads
+    // (you can't seek before duration is known on some browsers).
+    const seek = () => { try { audio.currentTime = rangeStart; } catch (_) {} };
+    if (audio.readyState >= 1) seek(); else audio.addEventListener("loadedmetadata", seek, { once: true });
+
+    audio.addEventListener("play", () => startPlayheadLoop());
+    audio.addEventListener("pause", () => { if (rangeStopHandle) { clearInterval(rangeStopHandle); rangeStopHandle = null; } });
+    audio.addEventListener("ended", () => { if (rangeStopHandle) { clearInterval(rangeStopHandle); rangeStopHandle = null; } });
+
+    document.getElementById("play-comment-range").onclick = () => {
+      rangeStopAt = rangeEnd;
+      seek();
+      audio.play().catch(err => console.warn("playback failed", err));
+      if (rangeStopHandle) clearInterval(rangeStopHandle);
+      rangeStopHandle = setInterval(() => {
+        if (audio.currentTime >= rangeStopAt) {
+          audio.pause();
+          clearInterval(rangeStopHandle);
+          rangeStopHandle = null;
+        }
+      }, 50);
+    };
+    document.getElementById("play-from-start").onclick = () => {
+      seek();
+      audio.play().catch(err => console.warn("playback failed", err));
+    };
+  }
+
+  // Kept for compatibility with anything else that might call playClip(); the
+  // native player now handles the heavy lifting.
+  function playClip(start, end) {
+    const audio = document.getElementById("audio-player");
+    if (!audio) return;
+    audio.currentTime = start;
+    audio.play().catch(err => console.warn("playback failed", err));
+    if (rangeStopHandle) clearInterval(rangeStopHandle);
+    rangeStopHandle = setInterval(() => {
+      if (audio.currentTime >= end) { audio.pause(); clearInterval(rangeStopHandle); rangeStopHandle = null; }
+    }, 50);
   }
 
   let activeAudio = null;
@@ -436,20 +496,6 @@
       playheadRAF = requestAnimationFrame(tick);
     }
     tick();
-  }
-
-  function playClip(start, end) {
-    if (activeAudio) { activeAudio.pause(); activeAudio = null; }
-    const audio = new Audio(`/lessons/${SESSION_ID}/video`);
-    audio.currentTime = start;
-    activeAudio = audio;
-    audio.play().catch(err => console.warn("playback failed", err));
-    startPlayheadLoop();
-    const stopAt = setInterval(() => {
-      if (audio.currentTime >= end) { audio.pause(); clearInterval(stopAt); }
-    }, 50);
-    audio.addEventListener("pause", () => clearInterval(stopAt));
-    audio.addEventListener("ended", () => clearInterval(stopAt));
   }
 
   async function renderSpectrogram(start, end) {
