@@ -222,18 +222,43 @@ def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
     for part_idx, part in enumerate(parts):
         divisions_per_qtr = 1
         tempo_qpm = 120.0
+        # Time signature: defaults to 4/4. measure_length_qtr is the *nominal*
+        # length of a measure in quarter notes; we use this to advance the
+        # cumulative score-time cursor at the end of each measure rather than
+        # trusting `cursor_qtr` (which is wherever the last <backup>/<forward>
+        # left it -- often back at 0 because MusicXML emits a trailing
+        # <backup> to reset for the next voice).
+        beats = 4
+        beat_type = 4
+        measure_length_qtr = 4.0
         current_time_qtr = 0.0  # cumulative time in quarter notes within the part
         measure_number = 0
         for measure in (m for m in list(part) if _local(m.tag) == "measure"):
             measure_number = int(measure.get("number") or measure_number + 1)
+            measure_start_qtr = current_time_qtr
             cursor_qtr = current_time_qtr  # position within this measure for the active "voice"
-            voice_cursors: dict[str, float] = {}
+            # `prev_note_start_qtr` is the start time of the most recent
+            # non-chord, non-grace note. Chord notes share THAT start time,
+            # not `cursor_qtr` (which has already advanced past the lead note).
+            prev_note_start_qtr = cursor_qtr
             for el in list(measure):
                 tag = _local(el.tag)
                 if tag == "attributes":
                     for child in list(el):
-                        if _local(child.tag) == "divisions" and child.text:
+                        ctag = _local(child.tag)
+                        if ctag == "divisions" and child.text:
                             divisions_per_qtr = int(child.text) or 1
+                        elif ctag == "time":
+                            beats_el = next((c for c in list(child) if _local(c.tag) == "beats"), None)
+                            beat_type_el = next((c for c in list(child) if _local(c.tag) == "beat-type"), None)
+                            try:
+                                if beats_el is not None and beats_el.text:
+                                    beats = int(beats_el.text)
+                                if beat_type_el is not None and beat_type_el.text:
+                                    beat_type = int(beat_type_el.text)
+                                measure_length_qtr = float(beats) * 4.0 / float(beat_type)
+                            except (TypeError, ValueError):
+                                pass
                 elif tag == "direction":
                     for sound in (s for s in el.iter() if _local(s.tag) == "sound"):
                         if sound.get("tempo"):
@@ -275,8 +300,9 @@ def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
                             alter = int(alter_el.text) if (alter_el is not None and alter_el.text) else 0
                             octave = int(octave_el.text)
                             midi = 12 * (octave + 1) + pc + alter
-                            # Chord notes share the start time of the previous note (don't advance cursor).
-                            note_start_qtr = cursor_qtr
+                            # Chord notes share the start time of the preceding
+                            # lead note (not the post-advance cursor position).
+                            note_start_qtr = prev_note_start_qtr if is_chord else cursor_qtr
                             score_time_sec = (note_start_qtr * 60.0) / tempo_qpm
                             out.append({
                                 "score_time_sec": score_time_sec,
@@ -287,8 +313,14 @@ def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
                                 "measure": measure_number,
                             })
                     if not is_chord and not is_grace:
+                        prev_note_start_qtr = cursor_qtr
                         cursor_qtr += dur_qtr
-            current_time_qtr = cursor_qtr
+            # Always advance the cumulative cursor by exactly one nominal
+            # measure, regardless of where the per-voice backup/forward dance
+            # left `cursor_qtr`. Trusting `cursor_qtr` makes m.2 start back at
+            # measure 1's position whenever the last voice ends with a
+            # trailing <backup>.
+            current_time_qtr = measure_start_qtr + measure_length_qtr
     out.sort(key=lambda x: (x["score_time_sec"], x["midi_pitch"]))
     return out
 
