@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-api = ["fastapi", "python-multipart", "uvicorn", "authlib", "cryptography"]
+api = ["fastapi", "python-multipart", "uvicorn", "authlib", "cryptography", "itsdangerous"]
 azure = ["azure-storage-file-datalake", "azure-identity"]
 llm = ["google-genai"]
 # Heavy ML deps for transcription + audio analysis. Installed in the cloud
