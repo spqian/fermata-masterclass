@@ -55,3 +55,17 @@ id_rsa.pub
 .idea/
 .DS_Store
 Thumbs.db
+
+# Hosting / infra — must never enter the repo (lives in ~/fermata-hosting/)
+infra/
+deploy/
+bicep/
+terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.bicep
+*.bicepparam
+azure.env
+azure-*.env
+fermata-hosting/
