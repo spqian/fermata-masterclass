@@ -638,7 +638,19 @@ def run_audio_truth_pipeline(
     score_notes = _scope_score_notes_to_played_range(score_notes, manifest)
     enriched: list[dict[str, Any]] | None = None
     if score_notes:
-        enriched = match_to_score(notes, score_notes)
+        # Estimate tempo ratio so the matcher can widen its time window.
+        # The MusicXML score_time_sec assumes the OMR's default tempo (~120bpm)
+        # but the performance may be 2-4x slower. Without adapting, the 4s
+        # time_window can't bridge a 3x slowdown and match rate plummets.
+        perf_duration = notes[-1]["performed_time_sec"] - notes[0]["performed_time_sec"] if len(notes) >= 2 else 0.0
+        score_duration = max(n["score_time_sec"] for n in score_notes) - min(n["score_time_sec"] for n in score_notes) if score_notes else 0.0
+        tempo_ratio = (perf_duration / score_duration) if score_duration > 0.1 else 1.0
+        adaptive_window = max(4.0, min(30.0, 4.0 * tempo_ratio))
+        _LOG.info(
+            "matcher window: perf=%.1fs score=%.1fs ratio=%.2f -> window=%.1fs",
+            perf_duration, score_duration, tempo_ratio, adaptive_window,
+        )
+        enriched = match_to_score(notes, score_notes, time_window_sec=adaptive_window)
         matched_count = sum(1 for n in enriched if n.get("matched"))
         matched_key = store.artifact_key(manifest.session, "analysis/audio_truth_matched_notes.json")
         storage.write_json(matched_key, {
