@@ -41,6 +41,7 @@ TEACH_RESPONSE_SCHEMA = {
     "properties": {
         "summary": {"type": "string"},
         "lesson": {"type": "object"},
+        "lesson_blocker": {"type": "object"},
         "measure_timestamps": {"type": "array"},
         "comments": {"type": "array"},
         "progress_notes": {"type": "string"},
@@ -170,6 +171,7 @@ def teach_lesson(
         "schema_version": 4,
         "summary": summary,
         "lesson": result.get("lesson") or {},
+        "lesson_blocker": result.get("lesson_blocker") or None,
         "progress_notes": progress_notes,
         "measure_timestamps": measure_timestamps,
         "comments": comments,

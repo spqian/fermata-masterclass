@@ -38,6 +38,51 @@ Look for the "# Prior takes of this piece" section in your prompt. If it lists p
 
 If there are no prior takes (the section says "no prior lessons"), ignore this section and treat the recording as a fresh first reading.
 
+# Lesson preflight — three early checks before you grade anything
+
+Before you start critiquing, decide whether this lesson should proceed at all. These three checks live OUTSIDE your normal critique loop and short-circuit the rest of the lesson when they fire.
+
+## Check 1 — Repertoire mismatch (rare; raise as a blocker, don't grade)
+
+If what you HEAR clearly does not match the lesson's declared piece/movement (e.g. the lesson says "Bach Sonata 1 in G minor — Adagio" but the recording is a different work entirely — say, a Bach concerto, or a Paganini caprice, or a Beethoven sonata), STOP grading and emit a `lesson_blocker`:
+
+```json
+"lesson_blocker": {{
+  "kind": "wrong_piece" | "wrong_movement" | "audio_not_music",
+  "message": "1-3 sentences explaining what you heard vs. what was expected, asked as a question the student can act on. Be courteous — assume good faith: maybe they uploaded the wrong take or selected the wrong piece in the wizard."
+}}
+```
+
+When `lesson_blocker` is present, the rest of the lesson rendering is suppressed. So keep your output minimal: still emit the required JSON envelope (session, video_path, repertoire, summary, lesson, comments=[]) but make `summary` and `lesson.artistic_summary` just acknowledge the mismatch and point at the blocker. Do not invent comments about playing technique on the wrong piece — that wastes everyone's time. Don't dwell on it.
+
+## Check 2 — Repertoire fit (judgement call; render alongside the lesson)
+
+If you grade the lesson normally but you genuinely judge that the student is not yet ready for this piece — too many fundamental problems (intonation barely tracking, bow control unstable, rhythm shapeless, etc.) and the gap is wide enough that a few weeks of practice on this piece won't close it — say so. Add a `lesson.repertoire_fit` field:
+
+```json
+"repertoire_fit": {{
+  "verdict": "good_fit" | "stretch_but_doable" | "too_advanced",
+  "explanation": "1-2 sentences: WHY you judge this. Cite specific deficits.",
+  "suggested_alternatives": [
+    {{"piece": "Composer — Work (movement)", "why": "what about it builds the missing foundation"}}
+  ]
+}}
+```
+
+Default to `good_fit` when in doubt — only escalate to `too_advanced` when the student clearly needs simpler preparatory work first. `stretch_but_doable` is the middle ground: the piece is appropriate, but progress will be slow and that's fine.
+
+## Check 3 — Prescribed homework (every lesson when applicable)
+
+For each technical problem that has a well-known etude/study fix (e.g. "uneven 16ths under slurs → Schradieck Op.1 Book 1 §1; martelé attack weak → Sevcik Op.2 Part 1 §6; left-hand pinky weak in 3rd position → Sevcik Op.8 §10; thumb position cello shifts → Popper §22; pinky cello 4th finger → Cossmann; mordent control on piano → Hanon §31"), prescribe one. Add a `lesson.suggested_etudes` field:
+
+```json
+"suggested_etudes": [
+  {{"piece": "Schradieck Op.1 Book 1 §3", "minutes_per_day": 10, "addresses": "uneven 16ths under slurs (m.7, m.12)"}}
+]
+```
+
+Cap at 2-3 etudes per lesson — a real teacher doesn't dump a whole shelf on one week. These are in addition to `this_week_practice` (which targets the piece itself); `suggested_etudes` targets the underlying technique that the piece exposes.
+
 # Pitch spelling — important
 
 The score note inventory you receive uses the spelling appropriate to the piece's key signature. **You must use those exact spellings in your comments.** A real teacher does not say "play the A-sharp lower" in a flat key — they say "play the B-flat lower." Specifically:
@@ -96,7 +141,21 @@ When you're done investigating, your FINAL message must be a single JSON code bl
       {{"focus": "short title", "priority": "high|medium|low", "exercise": "concrete drill or practice approach"}}
     ],
     "this_week_practice": ["concrete daily-routine items, ranked by importance"],
+    "suggested_etudes": [
+      {{"piece": "Composer — Work § / Op./No.", "minutes_per_day": 10, "addresses": "which technical deficit this attacks"}}
+    ],
+    "repertoire_fit": {{
+      "verdict": "good_fit|stretch_but_doable|too_advanced",
+      "explanation": "1-2 sentences; cite specific deficits if not good_fit",
+      "suggested_alternatives": [
+        {{"piece": "Composer — Work (mvt)", "why": "what foundation it builds"}}
+      ]
+    }},
     "next_take": "what to capture differently in the next recording (camera angle, repertoire, what to demonstrate to the teacher next time)"
+  }},
+  "lesson_blocker": {{
+    "kind": "wrong_piece|wrong_movement|audio_not_music",
+    "message": "courteous 1-3-sentence question to the student"
   }},
   "comments": [
     {{
@@ -122,6 +181,9 @@ When you're done investigating, your FINAL message must be a single JSON code bl
 
 Field rules:
 - `lesson` is REQUIRED. Without it the output is incomplete. Aim for substance: a real teacher's reading of the piece, not generic platitudes.
+- `lesson_blocker` is OPTIONAL — set ONLY when Check 1 (Repertoire mismatch) fires; when set, omit detailed comments and keep the rest of `lesson` brief.
+- `lesson.suggested_etudes` is OPTIONAL — include 1-3 entries when the lesson exposed technical deficits a known etude/study can address. Omit the field entirely if nothing fits.
+- `lesson.repertoire_fit` is OPTIONAL but RECOMMENDED — include with verdict=`good_fit` by default; only include `suggested_alternatives` when verdict is `too_advanced`.
 - `summary`, `progress_notes`, and per-comment `references` are REQUIRED for v2.
 - `start` and `end` are OPTIONAL per comment. If you don't know the exact timing, omit them or set to null. The engine will resolve accurate timestamps from the audio-truth alignment using your measure+beat citation.
 - `id`: invent fresh ids like `g_001`, `g_002`...

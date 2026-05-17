@@ -496,6 +496,37 @@
     .lesson-section .priority.high { background: rgba(217,122,108,0.18); color: var(--danger); }
     .lesson-section .priority.medium { background: rgba(201,169,106,0.18); color: var(--gold); }
 
+    .lesson-blocker {
+      background: rgba(217, 122, 108, 0.08);
+      border-left: 3px solid var(--danger);
+      padding: 10px 14px;
+      margin-top: 10px;
+      border-radius: 4px;
+    }
+    .lesson-blocker h4 { color: var(--danger); }
+
+    .repertoire-fit .verdict {
+      display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+      margin-left: 6px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+      background: rgba(255,255,255,0.06);
+    }
+    .repertoire-fit.fit-good_fit .verdict { background: rgba(106, 168, 79, 0.18); color: #82c168; }
+    .repertoire-fit.fit-stretch_but_doable .verdict { background: rgba(201,169,106,0.18); color: var(--gold); }
+    .repertoire-fit.fit-too_advanced .verdict { background: rgba(217, 122, 108, 0.18); color: var(--danger); }
+    .repertoire-fit .alts { margin-top: 8px; font-size: 13px; }
+    .repertoire-fit .alts-label { color: var(--ink-mute); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+
+    .lesson-section .etude {
+      padding: 8px 0; border-top: 1px dashed rgba(255,255,255,0.04);
+    }
+    .lesson-section .etude:first-child { border-top: none; }
+    .lesson-section .etude .piece { font-size: 13px; }
+    .lesson-section .etude .mins {
+      display: inline-block; font-size: 11px; padding: 1px 6px; margin-left: 6px;
+      background: rgba(201,169,106,0.18); color: var(--gold); border-radius: 8px;
+    }
+    .lesson-section .etude .why { font-size: 12px; color: var(--ink-mute); margin-top: 2px; }
+
     .empty {
       padding: 20px; color: var(--ink-mute); text-align: center;
       font-size: 14px; border: 1px dashed rgba(255,255,255,0.08); border-radius: 4px;
@@ -1310,8 +1341,23 @@
       const lesson = payload.lesson || {};
       const lessonBox = document.getElementById("lesson-detail");
       const sections = [];
+      const blocker = payload.lesson_blocker;
+      if (blocker && blocker.message) {
+        const kind = String(blocker.kind || "blocker").replace(/_/g, " ");
+        sections.push(`<div class="lesson-section lesson-blocker"><h4>⚠ Lesson can't proceed — ${escapeHtml(kind)}</h4><div>${escapeHtml(blocker.message)}</div></div>`);
+      }
       if (lesson.artistic_summary) {
         sections.push(`<div class="lesson-section"><h4>Artistic reading</h4><div>${escapeHtml(lesson.artistic_summary)}</div></div>`);
+      }
+      if (lesson.repertoire_fit && lesson.repertoire_fit.verdict) {
+        const v = String(lesson.repertoire_fit.verdict);
+        const expl = lesson.repertoire_fit.explanation || "";
+        const alts = Array.isArray(lesson.repertoire_fit.suggested_alternatives) ? lesson.repertoire_fit.suggested_alternatives : [];
+        let altHtml = "";
+        if (alts.length) {
+          altHtml = `<div class="alts"><div class="alts-label">Suggested alternatives:</div><ul>${alts.map(a => `<li><strong>${escapeHtml(a.piece || "")}</strong>${a.why ? " — " + escapeHtml(a.why) : ""}</li>`).join("")}</ul></div>`;
+        }
+        sections.push(`<div class="lesson-section repertoire-fit fit-${v}"><h4>Repertoire fit · <span class="verdict">${escapeHtml(v.replace(/_/g, " "))}</span></h4><div>${escapeHtml(expl)}</div>${altHtml}</div>`);
       }
       if (Array.isArray(lesson.what_works) && lesson.what_works.length) {
         sections.push(`<div class="lesson-section"><h4>What's working</h4><ul>${lesson.what_works.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`);
@@ -1325,6 +1371,14 @@
       }
       if (Array.isArray(lesson.this_week_practice) && lesson.this_week_practice.length) {
         sections.push(`<div class="lesson-section"><h4>This week's practice</h4><ul>${lesson.this_week_practice.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`);
+      }
+      if (Array.isArray(lesson.suggested_etudes) && lesson.suggested_etudes.length) {
+        const items = lesson.suggested_etudes.map(e => {
+          const mins = e.minutes_per_day ? ` <span class="mins">${escapeHtml(String(e.minutes_per_day))} min/day</span>` : "";
+          const why = e.addresses ? `<div class="why">${escapeHtml(e.addresses)}</div>` : "";
+          return `<div class="etude"><div class="piece"><strong>${escapeHtml(e.piece || "")}</strong>${mins}</div>${why}</div>`;
+        }).join("");
+        sections.push(`<div class="lesson-section"><h4>Prescribed studies (technique homework)</h4>${items}</div>`);
       }
       if (lesson.next_take) {
         sections.push(`<div class="lesson-section"><h4>For next take</h4><div>${escapeHtml(lesson.next_take)}</div></div>`);
