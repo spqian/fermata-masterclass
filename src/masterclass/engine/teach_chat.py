@@ -8,7 +8,8 @@ from typing import Any
 from masterclass.agent.llm import LlmProvider, LlmUsage
 from masterclass.agent_tools.catalog import tool_catalog_text
 from masterclass.agent_tools.registry import default_tool_registry
-from masterclass.core.chat_models import ChatConversation, ChatMessage, get_or_create_conversation, save_conversation
+from masterclass.core.chat_models import ChatConversation, ChatMessage, conversation_key, get_or_create_conversation, load_conversation, save_conversation
+from masterclass.core.conversation_lock import conversation_lock
 from masterclass.core.masterclasses import MasterclassStore
 from masterclass.core.models import SessionManifest, TenantContext
 from masterclass.core.sessions import SessionStore
@@ -113,9 +114,26 @@ def run_chat_turn(
 
     reply = (text or "").strip() or "I couldn't produce a reply for that turn. Please try again."
     usage_dict = chat_usage_dict(usage, guard_usage=topic_guard_usage)
-    conversation.append(ChatMessage(role="teacher", content=reply, tool_calls=tool_calls, usage=usage_dict))
-    save_conversation(storage, store, manifest, conversation)
-    return ChatTurnResult(conversation.conversation_id, reply, tool_calls, usage_dict)
+    user_msg = ChatMessage(role="user", content=message)
+    teacher_msg = ChatMessage(role="teacher", content=reply, tool_calls=tool_calls, usage=usage_dict)
+    # Merge-save under per-conversation lock so a concurrent drill
+    # completion (which also appends to ``cmt_<id>.json``) can't race
+    # with us and lose messages on the disk file.
+    final_conv_id = conversation.conversation_id
+    lock_key = conversation_key(store, manifest.session, final_conv_id)
+    with conversation_lock(lock_key):
+        try:
+            fresh = load_conversation(storage, store, manifest, final_conv_id)
+        except FileNotFoundError:
+            fresh = ChatConversation(
+                conversation_id=final_conv_id,
+                session_id=manifest.session.session_id,
+                user_id=manifest.session.user_id,
+            )
+        fresh.append(user_msg)
+        fresh.append(teacher_msg)
+        save_conversation(storage, store, manifest, fresh)
+    return ChatTurnResult(final_conv_id, reply, tool_calls, usage_dict)
 
 
 def build_chat_system_instruction(

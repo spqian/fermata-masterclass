@@ -2120,4 +2120,437 @@ def create_app():
         job = jobs.enqueue(manifest.session, job_type, (body.payload if body else {}))
         return job.to_json()
 
+    # ------------------------------------------------------------------
+    # Drill (practice-clip) endpoints
+    # ------------------------------------------------------------------
+    _COMMENT_ID_SAFE_OUTER = _COMMENT_ID_SAFE
+
+    def _read_lesson_comment(manifest, comment_id: str) -> dict | None:
+        """Pull a comment dict out of the lesson's enriched comments artifact."""
+        for rel in ("lesson/comments_enriched.json", "lesson/comments.json"):
+            key = manifest.artifacts.get(rel) or store.artifact_key(manifest.session, rel)
+            if not storage.exists(key):
+                continue
+            try:
+                payload = storage.read_json(key)
+            except (FileNotFoundError, ValueError):
+                continue
+            comments = (payload.get("comments") if isinstance(payload, dict) else None) or []
+            for comment in comments:
+                if isinstance(comment, dict) and str(comment.get("id") or "") == comment_id:
+                    return comment
+        return None
+
+    def _run_drill_jobs(drill_session_id: str, tenant_id: str, user_id: str) -> None:
+        """Background drill worker: build provider + ffmpeg, then run the pipeline."""
+        import logging
+        try:
+            ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+            try:
+                manifest = store.load_by_id(ctx, drill_session_id)
+            except FileNotFoundError:
+                return
+            try:
+                provider = _build_llm_provider_for_user(user_id)
+            except HTTPException as exc:
+                manifest.metadata["drill_state"] = "failed"
+                manifest.metadata["drill_error"] = str(exc.detail)
+                manifest.metadata["drill_feedback_state"] = "failed"
+                manifest.metadata["drill_feedback_error"] = str(exc.detail)
+                manifest.state = JobState.FAILED
+                store.save(manifest)
+                return
+            from masterclass.engine.drill_pipeline import DrillConfig, run_drill_pipeline
+            run_drill_pipeline(
+                storage=storage,
+                store=store,
+                manifest=manifest,
+                provider=provider,
+                config=DrillConfig(model=os.environ.get("MASTERCLASS_DRILL_MODEL", "gemini-2.5-flash")),
+            )
+        except Exception:
+            logging.exception("drill background job failed for %s", drill_session_id)
+
+    def _create_drill_manifest(
+        ctx: TenantContext,
+        *,
+        source_filename: str,
+        source_bytes: bytes,
+        source_content_type: str | None,
+        drill_instruction: str,
+        parent_session_id: str | None,
+        parent_comment_id: str | None,
+        parent_comment: dict | None,
+        masterclass_id: str | None,
+        instrument: str | None,
+        instrument_profile: str | None,
+    ):
+        drill = store.create(
+            ctx,
+            source_filename=source_filename,
+            repertoire=None,
+            movement=None,
+            instrument=instrument,
+            instrument_profile=instrument_profile,
+            notes=None,
+        )
+        drill.kind = SESSION_KIND_DRILL
+        # Drill payload always lives under input/source_video so the
+        # existing extract_media plumbing can read it without a special
+        # case for audio uploads (ffmpeg handles either).
+        key = store.artifact_key(drill.session, f"input/{source_filename}")
+        storage.write_bytes(key, source_bytes, content_type=source_content_type or "application/octet-stream")
+        drill.artifacts["input/source_video"] = key
+        drill.metadata["source_size_bytes"] = len(source_bytes)
+        drill.metadata["source_uploaded_at"] = datetime.now(UTC).isoformat()
+        drill.metadata["drill_instruction"] = drill_instruction
+        drill.metadata["drill_state"] = "uploaded"
+        if parent_session_id:
+            drill.metadata["parent_session_id"] = parent_session_id
+        if parent_comment_id:
+            drill.metadata["parent_comment_id"] = parent_comment_id
+        if parent_comment:
+            drill.metadata["parent_comment"] = {
+                "id": parent_comment.get("id"),
+                "measure": parent_comment.get("measure"),
+                "category": parent_comment.get("category"),
+                "severity": parent_comment.get("severity"),
+                "summary": parent_comment.get("summary"),
+                "text": parent_comment.get("text"),
+            }
+        if masterclass_id:
+            drill.metadata["masterclass_id"] = masterclass_id
+        drill.state = JobState.UPLOADED
+        store.save(drill)
+        return drill
+
+    def _post_drill_upload_bubble(parent_manifest, conv_id: str, drill_session_id: str, instruction: str) -> None:
+        """Append an optimistic 'uploading…' bubble to a comment thread."""
+        from masterclass.core.chat_models import (
+            ChatConversation,
+            ChatMessage,
+            conversation_key as _conv_key,
+            load_conversation as _load_conv,
+            save_conversation as _save_conv,
+        )
+        key = _conv_key(store, parent_manifest.session, conv_id)
+        with conversation_lock(key):
+            try:
+                conv = _load_conv(storage, store, parent_manifest, conv_id)
+            except FileNotFoundError:
+                conv = ChatConversation(
+                    conversation_id=conv_id,
+                    session_id=parent_manifest.session.session_id,
+                    user_id=parent_manifest.session.user_id,
+                )
+            conv.append(ChatMessage(
+                role="system",
+                content="📎 Practice clip uploaded — analysing…",
+                metadata={
+                    "type": "drill_upload",
+                    "drill_session_id": drill_session_id,
+                    "state": "processing",
+                    "drill_instruction_excerpt": (instruction or "")[:200],
+                },
+            ))
+            _save_conv(storage, store, parent_manifest, conv)
+
+    @app.post("/lessons/{session_id}/comments/{comment_id}/practice-clip")
+    async def upload_practice_clip_for_comment(
+        session_id: str,
+        comment_id: str,
+        file: UploadFile = File(...),
+        ctx: TenantContext = Depends(tenant_from_header),
+    ) -> dict:
+        # Validate parent integrity: lesson must exist, kind=lesson,
+        # owned by caller, and the comment must exist.
+        parent = _load_lesson_manifest(store, ctx, session_id)
+        safe_comment_id = _COMMENT_ID_SAFE.sub("_", comment_id or "").strip("_")
+        if not safe_comment_id:
+            raise HTTPException(status_code=400, detail="comment_id is required")
+        parent_comment = _read_lesson_comment(parent, comment_id)
+        if parent_comment is None:
+            raise HTTPException(status_code=404, detail=f"comment {comment_id} not found on this lesson")
+        instruction = (parent_comment.get("text") or parent_comment.get("summary") or "").strip()
+        if not instruction:
+            raise HTTPException(status_code=400, detail="parent comment has no text to use as drill instruction")
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="empty file")
+        filename = Path(file.filename or "drill.mp4").name
+
+        drill = _create_drill_manifest(
+            ctx,
+            source_filename=filename,
+            source_bytes=content,
+            source_content_type=file.content_type,
+            drill_instruction=instruction,
+            parent_session_id=session_id,
+            parent_comment_id=comment_id,
+            parent_comment=parent_comment,
+            masterclass_id=parent.metadata.get("masterclass_id"),
+            instrument=parent.instrument,
+            instrument_profile=parent.instrument_profile,
+        )
+
+        conv_id = _comment_conversation_id(comment_id)
+        _post_drill_upload_bubble(parent, conv_id, drill.session.session_id, instruction)
+
+        _spawn(
+            _run_drill_jobs,
+            drill.session.session_id,
+            drill.session.tenant_id,
+            drill.session.user_id,
+        )
+        return {
+            "drill_session_id": drill.session.session_id,
+            "conversation_id": conv_id,
+            "parent_session_id": session_id,
+            "parent_comment_id": comment_id,
+        }
+
+    @app.post("/masterclasses/{masterclass_id}/practice-clips")
+    async def upload_practice_clip_for_masterclass(
+        masterclass_id: str,
+        file: UploadFile = File(...),
+        drill_instruction: str | None = Form(default=None),
+        parent_session_id: str | None = Form(default=None),
+        parent_comment_id: str | None = Form(default=None),
+        ctx: TenantContext = Depends(tenant_from_header),
+    ) -> dict:
+        try:
+            mc = masterclasses.load_by_id(ctx, masterclass_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="masterclass not found") from exc
+
+        parent_manifest = None
+        parent_comment = None
+        if parent_session_id:
+            try:
+                parent_manifest = store.load_by_id(ctx, parent_session_id)
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="parent lesson not found") from exc
+            _require_lesson_kind(parent_manifest)
+            if parent_manifest.metadata.get("masterclass_id") and parent_manifest.metadata["masterclass_id"] != masterclass_id:
+                raise HTTPException(status_code=400, detail="parent lesson belongs to a different masterclass")
+            if parent_comment_id:
+                parent_comment = _read_lesson_comment(parent_manifest, parent_comment_id)
+                if parent_comment is None:
+                    raise HTTPException(status_code=404, detail=f"comment {parent_comment_id} not found on parent lesson")
+
+        # Drill must have either an explicit instruction or a parent comment.
+        instruction = (drill_instruction or "").strip()
+        if not instruction and parent_comment:
+            instruction = (parent_comment.get("text") or parent_comment.get("summary") or "").strip()
+        if not instruction:
+            raise HTTPException(
+                status_code=400,
+                detail="provide either drill_instruction text or parent_comment_id linking to an existing comment",
+            )
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="empty file")
+        filename = Path(file.filename or "drill.mp4").name
+
+        drill = _create_drill_manifest(
+            ctx,
+            source_filename=filename,
+            source_bytes=content,
+            source_content_type=file.content_type,
+            drill_instruction=instruction,
+            parent_session_id=parent_session_id,
+            parent_comment_id=parent_comment_id,
+            parent_comment=parent_comment,
+            masterclass_id=masterclass_id,
+            instrument=mc.instrument,
+            instrument_profile=mc.instrument_profile,
+        )
+
+        # Track the drill id on the masterclass.
+        drill_ids = list(mc.metadata.get("drill_session_ids") or [])
+        drill_ids.append(drill.session.session_id)
+        mc.metadata["drill_session_ids"] = drill_ids
+        masterclasses.save(mc)
+
+        # If linked to a parent comment thread, post the optimistic bubble too.
+        if parent_manifest is not None and parent_comment_id:
+            conv_id = _comment_conversation_id(parent_comment_id)
+            _post_drill_upload_bubble(parent_manifest, conv_id, drill.session.session_id, instruction)
+
+        _spawn(
+            _run_drill_jobs,
+            drill.session.session_id,
+            drill.session.tenant_id,
+            drill.session.user_id,
+        )
+        return {
+            "drill_session_id": drill.session.session_id,
+            "masterclass_id": masterclass_id,
+            "parent_session_id": parent_session_id,
+            "parent_comment_id": parent_comment_id,
+        }
+
+    def _load_drill_manifest(ctx: TenantContext, drill_session_id: str):
+        try:
+            manifest = store.load_by_id(ctx, drill_session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="drill not found") from exc
+        _require_drill_kind(manifest)
+        return manifest
+
+    @app.get("/drills/{drill_session_id}")
+    def get_drill(drill_session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        drill = _load_drill_manifest(ctx, drill_session_id)
+        feedback_key = drill.artifacts.get("lesson/drill_feedback.md")
+        feedback = None
+        if feedback_key and storage.exists(feedback_key):
+            try:
+                feedback = storage.read_bytes(feedback_key).decode("utf-8")
+            except Exception:
+                feedback = None
+        metrics_key = drill.artifacts.get("analysis/drill_metrics.json")
+        metrics = None
+        if metrics_key and storage.exists(metrics_key):
+            try:
+                metrics = storage.read_json(metrics_key)
+            except Exception:
+                metrics = None
+        return {
+            "session": drill.to_json(),
+            "drill_state": drill.metadata.get("drill_state"),
+            "drill_instruction": drill.metadata.get("drill_instruction"),
+            "parent_session_id": drill.metadata.get("parent_session_id"),
+            "parent_comment_id": drill.metadata.get("parent_comment_id"),
+            "parent_comment": drill.metadata.get("parent_comment"),
+            "masterclass_id": drill.metadata.get("masterclass_id"),
+            "metrics": metrics,
+            "feedback": feedback,
+        }
+
+    @app.get("/drills/{drill_session_id}/status")
+    def get_drill_status(drill_session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        drill = _load_drill_manifest(ctx, drill_session_id)
+        return {
+            "drill_session_id": drill_session_id,
+            "state": drill.metadata.get("drill_state") or "unknown",
+            "error": drill.metadata.get("drill_error"),
+            "stages": {
+                stage: drill.metadata.get(f"{stage}_state")
+                for stage in ("extract_media", "transcribe", "drill_metrics", "drill_feedback")
+            },
+            "updated_at": drill.updated_at,
+        }
+
+    @app.post("/drills/{drill_session_id}/retry")
+    def retry_drill(drill_session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        drill = _load_drill_manifest(ctx, drill_session_id)
+        # Clear failed-stage markers so the pipeline reruns them; ready
+        # stages are preserved (resume mode in run_drill_pipeline).
+        cleared: list[str] = []
+        for stage in ("extract_media", "transcribe", "drill_metrics", "drill_feedback"):
+            if (drill.metadata.get(f"{stage}_state") or "") in ("failed", "running"):
+                drill.metadata[f"{stage}_state"] = "pending"
+                drill.metadata[f"{stage}_error"] = None
+                cleared.append(stage)
+        drill.metadata["drill_state"] = "processing"
+        drill.metadata["drill_error"] = None
+        drill.state = JobState.ANALYZING
+        store.save(drill)
+        _spawn(
+            _run_drill_jobs,
+            drill.session.session_id,
+            drill.session.tenant_id,
+            drill.session.user_id,
+        )
+        return {"drill_session_id": drill_session_id, "retried_stages": cleared, "state": "processing"}
+
+    @app.delete("/drills/{drill_session_id}")
+    def delete_drill(drill_session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        drill = _load_drill_manifest(ctx, drill_session_id)
+        # Best-effort: remove from masterclass.metadata.drill_session_ids.
+        mc_id = drill.metadata.get("masterclass_id")
+        if mc_id:
+            try:
+                mc = masterclasses.load_by_id(ctx, mc_id)
+            except FileNotFoundError:
+                mc = None
+            if mc is not None:
+                ids = list(mc.metadata.get("drill_session_ids") or [])
+                if drill_session_id in ids:
+                    ids.remove(drill_session_id)
+                    mc.metadata["drill_session_ids"] = ids
+                    masterclasses.save(mc)
+        # Tombstone the manifest by writing a deleted marker. We don't
+        # have a hard delete in SessionStore; flagging it suffices and
+        # keeps audit trails.
+        drill.metadata["drill_state"] = "deleted"
+        drill.state = JobState.CANCELLED
+        store.save(drill)
+        return {"deleted": True, "drill_session_id": drill_session_id}
+
+    @app.get("/masterclasses/{masterclass_id}/practice-clips")
+    def list_practice_clips(masterclass_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> list[dict]:
+        try:
+            mc = masterclasses.load_by_id(ctx, masterclass_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="masterclass not found") from exc
+        out: list[dict] = []
+        for drill_id in mc.metadata.get("drill_session_ids") or []:
+            try:
+                drill = store.load_by_id(ctx, drill_id)
+            except FileNotFoundError:
+                continue
+            if drill.kind != SESSION_KIND_DRILL:
+                continue
+            if drill.state == JobState.CANCELLED or drill.metadata.get("drill_state") == "deleted":
+                continue
+            out.append({
+                "drill_session_id": drill_id,
+                "state": drill.metadata.get("drill_state"),
+                "drill_instruction": drill.metadata.get("drill_instruction"),
+                "parent_session_id": drill.metadata.get("parent_session_id"),
+                "parent_comment_id": drill.metadata.get("parent_comment_id"),
+                "created_at": drill.created_at,
+                "updated_at": drill.updated_at,
+            })
+        out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        return out
+
+    @app.get("/drills/{drill_session_id}/audio")
+    def get_drill_audio(drill_session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> Response:
+        drill = _load_drill_manifest(ctx, drill_session_id)
+        key = drill.artifacts.get("artifacts/audio.wav") or drill.artifacts.get("input/source_video")
+        if not key or not storage.exists(key):
+            raise HTTPException(status_code=404, detail="no drill audio available")
+        media_type = "audio/wav" if str(key).lower().endswith(".wav") else "application/octet-stream"
+        return Response(content=storage.read_bytes(key), media_type=media_type)
+
+    @app.get("/drills/{drill_session_id}/frame")
+    def get_drill_frame(drill_session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> Response:
+        drill = _load_drill_manifest(ctx, drill_session_id)
+        frames = drill.metadata.get("frames") or []
+        if not frames:
+            raise HTTPException(status_code=404, detail="no frames extracted for this drill")
+        key = str(frames[0])
+        if not storage.exists(key):
+            raise HTTPException(status_code=404, detail="frame file missing")
+        return Response(content=storage.read_bytes(key), media_type="image/jpeg")
+
+    _DRILL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+    @app.get("/drills/{drill_session_id}/page", response_class=HTMLResponse)
+    def drill_page(drill_session_id: str) -> HTMLResponse:
+        if not _DRILL_ID_RE.match(drill_session_id or ""):
+            raise HTTPException(status_code=400, detail="invalid drill id")
+        path = static_dir / "drill.html"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="drill page template not installed")
+        html = path.read_text(encoding="utf-8")
+        return HTMLResponse(
+            html.replace('"__DRILL_SESSION_ID__"', json.dumps(drill_session_id)),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        )
+
     return app
