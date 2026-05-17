@@ -392,10 +392,15 @@ def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manife
         sm_notes = []
     if sm_notes:
         import pretty_midi as _pm
+        from masterclass.engine.audio_truth import _WILDCARD_PITCH
         by_measure: dict[int, list[tuple[float, str]]] = {}
+        omr_empty_measures: set[int] = set()
         for n in sm_notes:
             m = n.get("measure")
             if not m:
+                continue
+            if int(n.get("midi_pitch", 0)) == _WILDCARD_PITCH or n.get("is_wildcard"):
+                omr_empty_measures.add(int(m))
                 continue
             name = _pm.note_number_to_name(int(n["midi_pitch"]))
             by_measure.setdefault(int(m), []).append((float(n["score_time_sec"]), name))
@@ -417,6 +422,15 @@ def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manife
                 cells = seen[:32]
                 more = f" (+{len(seen) - 32} more)" if len(seen) > 32 else ""
                 lines.append(f"- m.{m}: {', '.join(cells)}{more}")
+        if omr_empty_measures:
+            lines.extend([
+                "",
+                "## OMR gaps (pitches unknown for these measures)",
+                "",
+                "The score scanner (Audiveris) failed to extract any notes from the measures below — typically because they contain dense ornaments (trills) the OMR can't parse. The matcher still anchors timing through these measures, but **DO NOT make pitch-specific or intonation-specific claims about these measures**: the score pitches are unknown. Comment only on rhythm/tempo/general timing for notes in these measures.",
+                "",
+                f"- Affected measures: {', '.join(f'm.{m}' for m in sorted(omr_empty_measures))}",
+            ])
     if "analysis/piano_voicing.json" in manifest.artifacts:
         voicing = storage.read_json(manifest.artifacts["analysis/piano_voicing.json"])
         global_summary = voicing.get("summary", {}).get("global", {})

@@ -72,6 +72,11 @@ class AlignedNote:
     score_midi_pitch: Optional[int] = None
     timing_offset_ms: Optional[float] = None
     expected_perf_duration: Optional[float] = None
+    # True when the matcher anchored this note to an OMR-empty-measure ghost
+    # (synthesized because Audiveris dropped notes from a dense ornament
+    # measure). We know the measure, but the score pitch is unknown, so
+    # downstream consumers must skip cents-off / intonation comparisons.
+    matched_to_wildcard: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AlignedNote":
@@ -122,6 +127,7 @@ class AlignedNote:
             score_midi_pitch=int(score_midi_pitch) if score_midi_pitch is not None else None,
             timing_offset_ms=float(d["timing_offset_ms"]) if d.get("timing_offset_ms") is not None else None,
             expected_perf_duration=float(d["expected_perf_duration"]) if d.get("expected_perf_duration") is not None else None,
+            matched_to_wildcard=bool(d.get("matched_to_wildcard", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:

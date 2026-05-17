@@ -852,8 +852,9 @@
       const dwell = (n.dwell_sec ?? 0).toFixed(3);
       const conf = (n.confidence || "?").toLowerCase();
       const inCmt = currentComment && t >= (currentComment.start ?? 0) - 0.05 && t <= (currentComment.end ?? 1e9) + 0.05;
-      return `<tr class="${inCmt ? "highlight" : ""}">
-        <td>m.${escapeHtml(String(n.measure ?? "?"))}</td>
+      const wcTag = n.matched_to_wildcard ? ` <span class="badge" title="OMR dropped notes from this measure; only the measure number is trustworthy">OMR-gap</span>` : "";
+      return `<tr class="${inCmt ? "highlight" : ""}${n.matched_to_wildcard ? " wildcard" : ""}">
+        <td>m.${escapeHtml(String(n.measure ?? "?"))}${wcTag}</td>
         <td>${t}s</td>
         <td>${score_t}s</td>
         <td>${escapeHtml(pitches)}</td>

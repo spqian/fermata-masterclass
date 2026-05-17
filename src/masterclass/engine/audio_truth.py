@@ -39,6 +39,9 @@ from masterclass.storage.base import ObjectStorage
 _LOG = logging.getLogger(__name__)
 _NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+_WILDCARD_PITCH = -1  # sentinel score-midi-pitch for OMR-empty-measure ghost notes
+_WILDCARD_BEATS_PER_MEASURE = 4  # how many ghost notes to emit per empty measure
+
 PIANO_INSTRUMENTS = {
     # Both manifest.instrument and manifest.instrument_profile values that
     # map to PTI. The free-text field is rarely populated in production data;
@@ -241,6 +244,7 @@ def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
             # non-chord, non-grace note. Chord notes share THAT start time,
             # not `cursor_qtr` (which has already advanced past the lead note).
             prev_note_start_qtr = cursor_qtr
+            notes_emitted_for_measure = 0
             for el in list(measure):
                 tag = _local(el.tag)
                 if tag == "attributes":
@@ -312,9 +316,30 @@ def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
                                 "duration_sec": (dur_qtr * 60.0) / tempo_qpm,
                                 "measure": measure_number,
                             })
+                            notes_emitted_for_measure += 1
                     if not is_chord and not is_grace:
                         prev_note_start_qtr = cursor_qtr
                         cursor_qtr += dur_qtr
+            # If Audiveris produced an empty measure (no extractable notes --
+            # typically a dense ornament/trill measure it choked on), inject
+            # wildcard ghost notes so the matcher has anchors to keep its
+            # tempo estimate honest through the gap. Each ghost has the
+            # sentinel pitch _WILDCARD_PITCH = -1 and downstream matches are
+            # tagged matched_to_wildcard=True so intonation/teacher logic skips
+            # pitch comparisons on them.
+            if notes_emitted_for_measure == 0 and measure_length_qtr > 0:
+                wildcard_dur_qtr = measure_length_qtr / _WILDCARD_BEATS_PER_MEASURE
+                for beat_i in range(_WILDCARD_BEATS_PER_MEASURE):
+                    ghost_start_qtr = measure_start_qtr + beat_i * wildcard_dur_qtr
+                    out.append({
+                        "score_time_sec": (ghost_start_qtr * 60.0) / tempo_qpm,
+                        "midi_pitch": _WILDCARD_PITCH,
+                        "staff_index": 0,
+                        "track_name": f"part{part_idx}_wildcard",
+                        "duration_sec": (wildcard_dur_qtr * 60.0) / tempo_qpm,
+                        "measure": measure_number,
+                        "is_wildcard": True,
+                    })
             # Always advance the cumulative cursor by exactly one nominal
             # measure, regardless of where the per-voice backup/forward dance
             # left `cursor_qtr`. Trusting `cursor_qtr` makes m.2 start back at
@@ -429,6 +454,7 @@ def match_to_score(
     gap_score: float = -2.0,
     match_reward: float = 5.0,
     near_reward: float = 1.0,
+    wildcard_reward: float = 2.5,
     time_window_sec: float = 4.0,
     lag_smoothing: float = 0.85,
     backward_tolerance_sec: float = 0.5,
@@ -557,13 +583,20 @@ def match_to_score(
                         best_ptr = "left"
 
                 if in_band[i - 1][j - 1] and dp[i - 1][j - 1] > neg_inf / 2:
-                    pitch_delta = abs(perf_pitches[i - 1] - score_pitches[j - 1])
-                    if pitch_delta == 0:
-                        pitch_score = match_reward
-                    elif pitch_delta == 1:
-                        pitch_score = near_reward
+                    if score_pitches[j - 1] == _WILDCARD_PITCH:
+                        # OMR-empty-measure ghost note: matches any perf pitch
+                        # at moderate reward (less than a true match but more
+                        # than a near match) so they anchor the tempo without
+                        # outcompeting real pitch matches when they're nearby.
+                        pitch_score = wildcard_reward
                     else:
-                        pitch_score = -1000.0
+                        pitch_delta = abs(perf_pitches[i - 1] - score_pitches[j - 1])
+                        if pitch_delta == 0:
+                            pitch_score = match_reward
+                        elif pitch_delta == 1:
+                            pitch_score = near_reward
+                        else:
+                            pitch_score = -1000.0
                     expected_perf_time = ratio * score_times[j - 1] + offset
                     time_penalty = time_prior_weight * min(abs(perf_times[i - 1] - expected_perf_time), 20.0)
                     score = dp[i - 1][j - 1] + pitch_score - time_penalty
@@ -581,9 +614,12 @@ def match_to_score(
         while i > 0 or j > 0:
             step = ptr[i][j] if i >= 0 and j >= 0 else None
             if step == "diag":
-                pitch_delta = abs(perf_pitches[i - 1] - score_pitches[j - 1])
-                if pitch_delta <= 1:
+                if score_pitches[j - 1] == _WILDCARD_PITCH:
                     matches.append((i - 1, j - 1))
+                else:
+                    pitch_delta = abs(perf_pitches[i - 1] - score_pitches[j - 1])
+                    if pitch_delta <= 1:
+                        matches.append((i - 1, j - 1))
                 i -= 1
                 j -= 1
             elif step == "up":
@@ -619,7 +655,14 @@ def match_to_score(
         enriched["track_name"] = sn.get("track_name")
         enriched["measure"] = sn.get("measure")
         enriched["score_time_sec"] = sn.get("score_time_sec")
-        enriched["score_midi_pitch"] = sn.get("midi_pitch")
+        if sn.get("midi_pitch") == _WILDCARD_PITCH or sn.get("is_wildcard"):
+            # Wildcard ghost from an OMR-empty measure. We know which measure
+            # the note belongs to but the pitch is unknown, so downstream
+            # consumers must skip cents-off-score / intonation comparisons.
+            enriched["score_midi_pitch"] = None
+            enriched["matched_to_wildcard"] = True
+        else:
+            enriched["score_midi_pitch"] = sn.get("midi_pitch")
         expected_perf_time = tempo_ratio * float(sn.get("score_time_sec", 0.0) or 0.0) + start_offset
         enriched["timing_offset_ms"] = round((perf_time - expected_perf_time) * 1000.0, 1)
         return enriched
