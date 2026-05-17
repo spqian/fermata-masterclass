@@ -352,9 +352,11 @@ def _scope_score_notes_to_played_range(
     2. auto_detected_first/last_measure (from score_prep)
     3. Full score (no filter) as fallback
 
-    We add a generous margin (+4 measures) because the matcher's monotonic
-    constraint + EMA lag will handle slight over-shooting, but matching
-    against measures 80-117 when the student played m.1-22 is catastrophic.
+    We add a small margin (+1 measure) so chord voices or last-note overruns
+    that legitimately extend past the marked end are still matchable. A larger
+    margin previously over-extended the score's time span, which threw off
+    the NW matcher's global tempo estimate (last_perf / last_score) and
+    caused the matcher to race ahead by 2-3 measures over the recording.
     """
     if not score_notes:
         return score_notes
@@ -377,7 +379,7 @@ def _scope_score_notes_to_played_range(
     if first is None or last is None:
         return score_notes
 
-    margin = 4
+    margin = 0
     lo = max(1, first - margin)
     hi = last + margin
     filtered = [n for n in score_notes if lo <= int(n.get("measure", 0)) <= hi]
