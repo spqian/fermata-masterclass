@@ -11,6 +11,10 @@ class LlmUsage:
     input_tokens: int | None
     output_tokens: int | None
     estimated_cost_usd: float | None
+    # Implicit-cache hits: subset of input_tokens that Gemini billed at the
+    # 25% cached-input rate. Surfaced separately so callers can show savings
+    # and the cost estimator can apply the discount.
+    cached_tokens: int = 0
 
 
 class LlmProvider(Protocol):

@@ -1140,7 +1140,8 @@
       const toolHtml = toolCalls.length
         ? `<details><summary>🔧 ${toolCalls.length} tool call${toolCalls.length === 1 ? "" : "s"}</summary>${toolCalls.map(c => `<div>${escapeHtml(toolCallLabel(c))}</div>`).join("")}</details>`
         : "";
-      const costHtml = usage ? `<div class="cost">${escapeHtml(usage.model || "model")} · ${usage.input_tokens ?? "?"} in / ${usage.output_tokens ?? "?"} out · ${formatCost(usage.estimated_cost_usd)}</div>` : "";
+      const cachedTag = usage && usage.cached_tokens ? ` · ${usage.cached_tokens} cached` : "";
+      const costHtml = usage ? `<div class="cost">${escapeHtml(usage.model || "model")} · ${usage.input_tokens ?? "?"} in / ${usage.output_tokens ?? "?"} out${cachedTag} · ${formatCost(usage.estimated_cost_usd)}</div>` : "";
       div.innerHTML = `${role === "teacher" ? `<span class="gemini">✦</span>` : ""}${escapeHtml(text)}${toolHtml}${costHtml}`;
       messagesEl.appendChild(div);
       messagesEl.scrollTop = messagesEl.scrollHeight;

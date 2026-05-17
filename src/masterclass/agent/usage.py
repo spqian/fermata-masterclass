@@ -20,7 +20,20 @@ _PRICING_PER_MILLION = {
 }
 
 
-def estimate_cost_usd(model: str, input_tokens: int | None, output_tokens: int | None) -> float | None:
+def estimate_cost_usd(
+    model: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    *,
+    cached_tokens: int = 0,
+) -> float | None:
+    """Estimate USD cost for one generation.
+
+    ``cached_tokens`` is the subset of ``input_tokens`` that Gemini billed at
+    the implicit-cache rate (25% of normal input). When present, those
+    tokens are charged at the lower rate instead of double-counting at full
+    price.
+    """
     if input_tokens is None or output_tokens is None:
         return None
     rates = None
@@ -31,7 +44,14 @@ def estimate_cost_usd(model: str, input_tokens: int | None, output_tokens: int |
     if rates is None:
         return None
     input_rate, output_rate = rates
-    return round(input_tokens * input_rate / 1_000_000 + output_tokens * output_rate / 1_000_000, 6)
+    cached = max(0, min(int(cached_tokens or 0), int(input_tokens)))
+    uncached = int(input_tokens) - cached
+    cached_rate = input_rate * 0.25
+    return round(
+        (uncached * input_rate + cached * cached_rate) / 1_000_000
+        + output_tokens * output_rate / 1_000_000,
+        6,
+    )
 
 
 def summarize_usage(model: str, usage_log: list[dict]) -> dict:
@@ -44,6 +64,6 @@ def summarize_usage(model: str, usage_log: list[dict]) -> dict:
         "total_input": total_input,
         "total_output": total_output,
         "total_cached": total_cached,
-        "estimated_cost_usd": estimate_cost_usd(model, total_input, total_output),
+        "estimated_cost_usd": estimate_cost_usd(model, total_input, total_output, cached_tokens=total_cached),
     }
 

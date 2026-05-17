@@ -73,12 +73,16 @@ def run_chat_turn(
 
     config = config or ChatConfig()
     conversation = get_or_create_conversation(storage, store, manifest, conversation_id)
+    # Snapshot prior history BEFORE appending the new message so we can pass
+    # it to the model as multi-turn contents (which keeps the system prompt
+    # stable and lets Gemini implicit caching kick in).
+    prior_history = list(conversation.messages)
     conversation.append(ChatMessage(role="user", content=message))
 
     profile = load_instrument_profile(manifest.instrument_profile)
     registry = default_tool_registry(profile)
     system_instruction = build_chat_system_instruction(
-        storage, store, manifest, conversation, profile=profile, comment_id=comment_id,
+        storage, store, manifest, conversation=None, profile=profile, comment_id=comment_id,
     )
     contents, uploaded = _build_chat_contents(
         storage=storage,
@@ -88,6 +92,8 @@ def run_chat_turn(
         config=config,
         masterclasses=masterclasses,
         user_message=message,
+        prior_history=prior_history,
+        comment_id=comment_id,
     )
 
     try:
@@ -121,34 +127,23 @@ def build_chat_system_instruction(
     profile: Any | None = None,
     comment_id: str | None = None,
 ) -> str:
-    """Build the instrument-aware teacher prompt plus lesson-scoped chat rules."""
+    """Build the instrument-aware teacher prompt plus lesson-scoped chat rules.
+
+    The system instruction is intentionally STABLE across chat turns within
+    a lesson: it does NOT include the conversation history (history is
+    passed as multi-turn contents instead) and it does NOT vary by
+    comment_id (the comment context is injected into the user message via a
+    `[Re: comment <id>]` prefix). Both choices preserve a stable ~5KB
+    system prefix that Gemini implicit caching can reuse across turns at
+    the 25% cached-input rate. Passing a ``conversation`` is accepted for
+    backward compat but ignored.
+    """
+    del conversation, comment_id  # not used by the cache-stable prompt
 
     if profile is None and manifest is not None:
         profile = load_instrument_profile(manifest.instrument_profile)
     base = system_instruction_for_profile(profile, tool_catalog=tool_catalog_text(profile)) if profile is not None else "You are a careful music teacher."
     takeaway, comments_digest = _lesson_context(storage, store, manifest) if storage and store and manifest else ({}, [])
-    history = _chat_history_text(conversation) if conversation else "(no previous chat messages)"
-    # If the student is replying to a specific comment, pin that comment into
-    # the prompt so the teacher answers in-context (like a Slack/Teams thread
-    # reply where the parent message is implicit).
-    focused_comment_block = ""
-    if comment_id:
-        focused = next(
-            (c for c in comments_digest if str(c.get("id") or "").strip() == comment_id.strip()),
-            None,
-        )
-        if focused is not None:
-            focused_comment_block = (
-                f"\n\n## You are replying inside the thread for comment `{comment_id}`\n\n"
-                f"{json.dumps(focused, ensure_ascii=False, indent=2)}\n\n"
-                "Treat the student's message as a follow-up to the comment above. "
-                "Keep your reply focused on that comment's scope — don't restart the lesson critique."
-            )
-        else:
-            focused_comment_block = (
-                f"\n\n## You are replying inside the thread for comment `{comment_id}`\n\n"
-                "(comment text not found in the digest; answer the student's question in the lesson's general context.)"
-            )
     return base + "\n\n" + (
         "## Chat mode\n\n"
         "You already gave the student a structured critique of THIS performance (their original lesson takeaway and comments are below). "
@@ -157,14 +152,13 @@ def build_chat_system_instruction(
         "- You may consult the audio (listen tool), video frames (watch / get_frames tools), or any inspection tool if it helps you give a better answer. Use them sparingly — at most 5 tool calls per response.\n"
         "- When citing measures, use the same measure numbering convention as the lesson comments.\n"
         "- If the question is off-topic for music performance, politely redirect.\n"
-        "- Be concise — chat responses should be 1-3 paragraphs unless a longer explanation is genuinely needed.\n\n"
+        "- Be concise — chat responses should be 1-3 paragraphs unless a longer explanation is genuinely needed.\n"
+        "- A user message prefixed with `[Re: comment <id>] ` is a reply inside that comment's thread; "
+        "keep your answer focused on that comment's scope. Without the prefix the message is a general lesson question.\n\n"
         "Original lesson takeaway:\n"
         f"{json.dumps(takeaway, ensure_ascii=False, indent=2)}\n\n"
         "Original lesson comments (severity, bar references, summary only):\n"
-        f"{json.dumps(comments_digest, ensure_ascii=False, indent=2)}"
-        f"{focused_comment_block}\n\n"
-        "Conversation so far (most recent last):\n"
-        f"{history}"
+        f"{json.dumps(comments_digest, ensure_ascii=False, indent=2)}\n"
     )
 
 
@@ -172,13 +166,20 @@ def chat_usage_dict(usage: LlmUsage | None, *, guard_usage: LlmUsage | None = No
     model = usage.model if usage else "gemini-2.5-pro"
     input_tokens = usage.input_tokens if usage else 0
     output_tokens = usage.output_tokens if usage else 0
-    estimated = estimate_chat_cost(model, input_tokens, output_tokens)
+    cached_tokens = getattr(usage, "cached_tokens", 0) if usage else 0
+    estimated = estimate_chat_cost(model, input_tokens, output_tokens, cached_tokens=cached_tokens)
     if guard_usage is not None:
-        guard_cost = estimate_chat_cost(guard_usage.model, guard_usage.input_tokens, guard_usage.output_tokens) or 0.0
+        guard_cost = estimate_chat_cost(
+            guard_usage.model,
+            guard_usage.input_tokens,
+            guard_usage.output_tokens,
+            cached_tokens=getattr(guard_usage, "cached_tokens", 0),
+        ) or 0.0
         estimated = round((estimated or 0.0) + guard_cost, 6)
     data: dict[str, Any] = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cached_tokens": cached_tokens,
         "estimated_cost_usd": estimated,
         "model": model,
     }
@@ -186,13 +187,27 @@ def chat_usage_dict(usage: LlmUsage | None, *, guard_usage: LlmUsage | None = No
         data["topic_guard"] = {
             "input_tokens": guard_usage.input_tokens,
             "output_tokens": guard_usage.output_tokens,
-            "estimated_cost_usd": estimate_chat_cost(guard_usage.model, guard_usage.input_tokens, guard_usage.output_tokens),
+            "cached_tokens": getattr(guard_usage, "cached_tokens", 0),
+            "estimated_cost_usd": estimate_chat_cost(
+                guard_usage.model,
+                guard_usage.input_tokens,
+                guard_usage.output_tokens,
+                cached_tokens=getattr(guard_usage, "cached_tokens", 0),
+            ),
             "model": guard_usage.model,
         }
     return data
 
 
-def estimate_chat_cost(model: str, input_tokens: int | None, output_tokens: int | None) -> float | None:
+def estimate_chat_cost(
+    model: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    *,
+    cached_tokens: int = 0,
+) -> float | None:
+    """Estimate chat-turn cost. ``cached_tokens`` is the subset of
+    ``input_tokens`` Gemini billed at the 25% implicit-cache rate."""
     if input_tokens is None or output_tokens is None:
         return None
     # Match model name to pricing table (handles versioned names like "gemini-3.1-pro-preview")
@@ -200,10 +215,20 @@ def estimate_chat_cost(model: str, input_tokens: int | None, output_tokens: int 
         if model.startswith(prefix):
             table = GEMINI_CHAT_PRICING_PER_MILLION.get(prefix) or GEMINI_CHAT_PRICING_PER_MILLION.get("gemini-2.5-pro")
             input_rate = table["input_gt_200k"] if input_tokens > 200_000 else table["input_le_200k"]
-            return round((input_tokens * input_rate + output_tokens * table["output"]) / 1_000_000, 6)
+            cached = max(0, min(int(cached_tokens or 0), int(input_tokens)))
+            uncached = int(input_tokens) - cached
+            return round(
+                (uncached * input_rate + cached * input_rate * 0.25 + output_tokens * table["output"]) / 1_000_000,
+                6,
+            )
     if model.startswith("gemini-2.5-flash"):
         table = GEMINI_CHAT_PRICING_PER_MILLION["gemini-2.5-flash"]
-        return round((input_tokens * table["input"] + output_tokens * table["output"]) / 1_000_000, 6)
+        cached = max(0, min(int(cached_tokens or 0), int(input_tokens)))
+        uncached = int(input_tokens) - cached
+        return round(
+            (uncached * table["input"] + cached * table["input"] * 0.25 + output_tokens * table["output"]) / 1_000_000,
+            6,
+        )
     return usage_cost_fallback(input_tokens, output_tokens)
 
 
@@ -220,20 +245,17 @@ def _build_chat_contents(
     config: ChatConfig,
     masterclasses: MasterclassStore | None,
     user_message: str,
+    prior_history: list[ChatMessage] | None = None,
+    comment_id: str | None = None,
 ) -> tuple[list[Any], list[Any]]:
     """Build chat contents WITHOUT re-shipping audio / score / video binaries.
 
-    Chat turns previously re-uploaded audio_16k.wav (~4K tokens), all score
-    page PNGs (~2K tokens), and up to 8 video frames (~2K tokens) on every
-    turn. That cost ~3¢ per chat reply, dominated by binary re-uploads. The
-    system prompt already directs the teacher to use ``listen()``,
-    ``watch()``, ``get_frames()``, and ``inspect_*`` tools to fetch any
-    binary on demand, so re-shipping was pure waste.
-
-    Now the baseline is text-only (evidence digest + score note inventory +
-    student message). The teacher uses tools when it actually needs to look
-    at the audio or score. Typical chat turn drops from ~21K → ~9K input
-    tokens (~55% cheaper).
+    Per-lesson context (evidence digest, briefing, score note inventory) is
+    emitted FIRST in stable order so Gemini implicit caching can reuse the
+    prefix across turns. Conversation history follows as alternating
+    user/teacher turns. The new student message is last (and optionally
+    prefixed with ``[Re: comment <id>] `` so the teacher knows the question
+    is scoped to a specific lesson comment).
     """
     score_map = _read_score_map(storage, store, manifest)
     score_key = score_map.get("key") if score_map else None
@@ -245,6 +267,7 @@ def _build_chat_contents(
     inventory = build_score_note_inventory(score_map, first_measure=first_measure, last_measure=last_measure) if score_map else ""
 
     uploaded: list[Any] = []
+    # ---- Stable per-lesson preamble (this is what implicit caching will catch) ----
     contents: list[Any] = [
         "# Evidence digest\n\n" + (evidence_digest or "(no deterministic evidence digest available)") + "\n",
         "# Recording briefing\n\n"
@@ -263,10 +286,26 @@ def _build_chat_contents(
         "- `inspect_intonation`, `inspect_bar`, `inspect_chord`, `measure_tempo`, `measure_dynamics`, etc. for measurement queries\n"
         "Call them only when the student's question genuinely requires a fresh look at the audio/video; "
         "for follow-ups about comments you already made, the evidence digest + inventory above are usually enough.\n",
-        "# Current student follow-up\n\n"
-        f"{user_message}\n\n"
-        "Answer naturally as the same teacher. You may use tools, but do not produce JSON; write a concise chat reply.",
     ]
+
+    # ---- Prior conversation history as alternating turns ----
+    # We pass these as plain strings tagged with role markers so the
+    # provider can construct multi-turn contents. The Gemini provider will
+    # wrap a final user message; everything before it is conceptually part
+    # of the prefix the model already saw. With a stable system prompt +
+    # stable preamble + append-only history, the cached prefix grows
+    # monotonically each turn.
+    for msg in (prior_history or []):
+        role = "Student" if msg.role == "user" else "Teacher" if msg.role == "teacher" else msg.role.title()
+        contents.append(f"# {role} (previous turn)\n\n{msg.content}\n")
+
+    # ---- Current student message ----
+    prefix = f"[Re: comment {comment_id}] " if comment_id else ""
+    contents.append(
+        "# Current student follow-up\n\n"
+        f"{prefix}{user_message}\n\n"
+        "Answer naturally as the same teacher. You may use tools, but do not produce JSON; write a concise chat reply."
+    )
     return contents, uploaded
 
 

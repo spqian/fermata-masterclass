@@ -255,12 +255,14 @@ def _usage_record(response: Any, label: str) -> dict[str, int | str]:
 def _usage_from_log(provider: str, model: str, usage_log: list[dict]) -> LlmUsage:
     input_tokens = sum(int(u.get("prompt_token_count", 0) or 0) for u in usage_log)
     output_tokens = sum(int(u.get("candidates_token_count", 0) or 0) for u in usage_log)
+    cached_tokens = sum(int(u.get("cached_content_token_count", 0) or 0) for u in usage_log)
     return LlmUsage(
         provider=provider,
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        estimated_cost_usd=estimate_cost_usd(model, input_tokens, output_tokens),
+        estimated_cost_usd=estimate_cost_usd(model, input_tokens, output_tokens, cached_tokens=cached_tokens),
+        cached_tokens=cached_tokens,
     )
 
 
