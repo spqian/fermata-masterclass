@@ -502,6 +502,55 @@
       cursor: pointer;
     }
     .thread-input-row button:disabled { opacity: 0.45; cursor: default; }
+    .thread-input-row .clip-upload-btn {
+      background: rgba(255,255,255,0.06);
+      color: var(--ink-mute);
+      border: 1px solid rgba(255,255,255,0.10);
+      padding: 7px 10px;
+    }
+    .thread-input-row .clip-upload-btn:hover { color: var(--gold); border-color: rgba(201,169,106,0.45); }
+    .drill-bubble {
+      background: rgba(201,169,106,0.08);
+      border-left: 3px solid var(--gold-soft);
+      padding: 8px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--ink-mute);
+    }
+    .drill-bubble.error {
+      background: rgba(217,122,108,0.10);
+      border-left-color: var(--danger);
+      color: var(--danger);
+    }
+    .drill-bubble .drill-state-tag {
+      display: inline-block;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(0,0,0,0.25);
+      color: var(--gold);
+      margin-left: 6px;
+    }
+    .drill-bubble .drill-retry-link {
+      color: var(--gold);
+      text-decoration: underline;
+      cursor: pointer;
+      margin-left: 6px;
+    }
+    .chat-msg.teacher .drill-source-tag {
+      display: inline-block;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(201,169,106,0.18);
+      color: var(--gold);
+      margin-right: 6px;
+      vertical-align: middle;
+    }
 
     .lesson-general-card {
       background: rgba(255,255,255,0.02);
@@ -1121,10 +1170,15 @@
       const placeholder = commentId
         ? "Reply to this comment…"
         : "Ask a general follow-up about this lesson…";
+      const clipBtn = commentId
+        ? `<button type="button" class="clip-upload-btn" title="Upload a practice clip for this comment">🎤</button>
+           <input type="file" class="clip-upload-input" accept="video/*,audio/*" hidden>`
+        : "";
       return `
         <div class="thread" data-thread-cid="${commentId || ''}">
           <div class="thread-messages"></div>
           <form class="thread-input-row">
+            ${clipBtn}
             <textarea class="thread-input" maxlength="2048" placeholder="${placeholder}"></textarea>
             <button type="submit" class="thread-send">Send</button>
           </form>
@@ -1133,6 +1187,37 @@
     }
 
     function appendThreadMessage(messagesEl, role, text, opts = {}) {
+      const meta = opts.metadata || {};
+      // Drill upload / result messages get distinct styling so users can
+      // tell at a glance that a bubble is about a practice clip rather
+      // than plain text chat.
+      if (meta.type === "drill_upload") {
+        const div = document.createElement("div");
+        const state = meta.state || "processing";
+        const isFailed = state === "failed";
+        div.className = `drill-bubble${isFailed ? " error" : ""}`;
+        div.dataset.drillId = meta.drill_session_id || "";
+        div.dataset.drillBubble = "upload";
+        const stateLabel = state === "processing" ? "ANALYSING" : state.toUpperCase();
+        const retry = isFailed
+          ? `<span class="drill-retry-link" data-retry-drill="${meta.drill_session_id || ''}">↻ Retry</span>`
+          : "";
+        const err = meta.error ? `<div class="drill-error" style="margin-top:4px">${escapeHtml(String(meta.error))}</div>` : "";
+        div.innerHTML = `🎤 ${escapeHtml(text)}<span class="drill-state-tag">${stateLabel}</span>${retry}${err}`;
+        messagesEl.appendChild(div);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        return div;
+      }
+      if (meta.type === "drill_result") {
+        const div = document.createElement("div");
+        const isFailed = meta.state === "failed";
+        div.className = `chat-msg teacher${isFailed ? " error" : ""}`;
+        div.dataset.drillId = meta.drill_session_id || "";
+        div.innerHTML = `<span class="gemini">✦</span><span class="drill-source-tag">🎤 from practice clip</span>${escapeHtml(text)}`;
+        messagesEl.appendChild(div);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        return div;
+      }
       const div = document.createElement("div");
       div.className = `chat-msg ${role === "user" ? "user" : "teacher"}${opts.error ? " error" : ""}`;
       const toolCalls = opts.tool_calls || [];
@@ -1170,7 +1255,7 @@
         }
         state.messages = history.messages || [];
         for (const msg of state.messages) {
-          appendThreadMessage(messagesEl, msg.role, msg.content, { tool_calls: msg.tool_calls || [], usage: msg.usage });
+          appendThreadMessage(messagesEl, msg.role, msg.content, { tool_calls: msg.tool_calls || [], usage: msg.usage, metadata: msg.metadata || {} });
         }
         if (!state.messages.length) {
           const empty = document.createElement("div");
@@ -1238,13 +1323,93 @@
       }
     }
 
+    async function uploadPracticeClip(commentId, threadEl, file) {
+      const state = getThread(commentId);
+      const messagesEl = threadEl.querySelector(".thread-messages");
+      const emptyEl = messagesEl.querySelector(".thread-empty");
+      if (emptyEl) emptyEl.remove();
+      const bubble = appendThreadMessage(messagesEl, "system", "Uploading practice clip…", {
+        metadata: { type: "drill_upload", state: "processing" },
+      });
+      try {
+        const form = new FormData();
+        form.append("file", file, file.name || "clip.mp4");
+        const resp = await fetch(`/lessons/${SESSION_ID}/comments/${encodeURIComponent(commentId)}/practice-clip`, {
+          method: "POST",
+          body: form,
+        });
+        if (!resp.ok) {
+          const detail = await resp.text();
+          throw new Error(`Upload failed (${resp.status}): ${detail}`);
+        }
+        const payload = await resp.json();
+        bubble.dataset.drillId = payload.drill_session_id;
+        bubble.innerHTML = `🎤 Practice clip uploaded — analysing your practice clip…<span class="drill-state-tag">PROCESSING</span>`;
+        startDrillPolling(commentId, threadEl, payload.drill_session_id);
+      } catch (err) {
+        bubble.classList.add("error");
+        bubble.innerHTML = `❌ ${escapeHtml(err.message || String(err))}`;
+      }
+    }
+
+    const _drillPolling = new Map();
+    function startDrillPolling(commentId, threadEl, drillId) {
+      if (_drillPolling.has(drillId)) return;
+      const messagesEl = threadEl.querySelector(".thread-messages");
+      const intervalId = setInterval(async () => {
+        try {
+          const status = await fetch(`/drills/${encodeURIComponent(drillId)}/status`).then(r => r.json());
+          if (status.state === "ready") {
+            clearInterval(intervalId);
+            _drillPolling.delete(drillId);
+            // Reload the thread history to pick up the drill_result reply.
+            const state = getThread(commentId);
+            state.loaded = false;
+            messagesEl.innerHTML = "";
+            loadThreadHistory(commentId, messagesEl);
+          } else if (status.state === "failed") {
+            clearInterval(intervalId);
+            _drillPolling.delete(drillId);
+            const state = getThread(commentId);
+            state.loaded = false;
+            messagesEl.innerHTML = "";
+            loadThreadHistory(commentId, messagesEl);
+          }
+        } catch (err) {
+          // Transient: keep polling
+        }
+      }, 5000);
+      _drillPolling.set(drillId, intervalId);
+    }
+
+    async function retryDrill(drillId) {
+      try {
+        await fetch(`/drills/${encodeURIComponent(drillId)}/retry`, { method: "POST" });
+      } catch (err) { /* ignore */ }
+    }
+
     function wireThread(threadEl) {
       const commentId = threadEl.dataset.threadCid || null;
       const messagesEl = threadEl.querySelector(".thread-messages");
       const formEl = threadEl.querySelector(".thread-input-row");
       const inputEl = threadEl.querySelector(".thread-input");
+      const clipBtn = threadEl.querySelector(".clip-upload-btn");
+      const clipInput = threadEl.querySelector(".clip-upload-input");
       // Lazy-load history when the thread is first opened.
-      loadThreadHistory(commentId, messagesEl);
+      loadThreadHistory(commentId, messagesEl).then(() => {
+        // After loading, if any drill_upload bubbles are still in
+        // "processing" state, poll their drills so the UI catches up.
+        if (commentId) {
+          for (const bubble of messagesEl.querySelectorAll(".drill-bubble[data-drill-bubble='upload']")) {
+            const tag = bubble.querySelector(".drill-state-tag");
+            const stateText = (tag?.textContent || "").trim().toLowerCase();
+            const drillId = bubble.dataset.drillId;
+            if (drillId && (stateText === "analysing" || stateText === "processing")) {
+              startDrillPolling(commentId, threadEl, drillId);
+            }
+          }
+        }
+      });
       inputEl.addEventListener("input", () => {
         inputEl.style.height = "auto";
         inputEl.style.height = `${Math.min(inputEl.scrollHeight, 110)}px`;
@@ -1261,9 +1426,30 @@
         inputEl.style.height = "auto";
         sendThreadMessage(commentId, threadEl, msg);
       });
-      // Cmd/Ctrl+Enter submits.
       inputEl.addEventListener("keydown", (e) => {
         if ((e.metaKey || e.ctrlKey) && e.key === "Enter") formEl.requestSubmit();
+      });
+      if (clipBtn && clipInput && commentId) {
+        clipBtn.addEventListener("click", (e) => { e.preventDefault(); clipInput.click(); });
+        clipInput.addEventListener("change", () => {
+          const f = clipInput.files && clipInput.files[0];
+          if (!f) return;
+          clipInput.value = "";
+          uploadPracticeClip(commentId, threadEl, f);
+        });
+      }
+      // Retry link on a failed drill bubble.
+      messagesEl.addEventListener("click", async (event) => {
+        const t = event.target;
+        if (t && t.dataset && t.dataset.retryDrill) {
+          const did = t.dataset.retryDrill;
+          await retryDrill(did);
+          const state = getThread(commentId);
+          state.loaded = false;
+          messagesEl.innerHTML = "";
+          loadThreadHistory(commentId, messagesEl);
+          if (commentId) startDrillPolling(commentId, threadEl, did);
+        }
       });
     }
 
