@@ -99,6 +99,37 @@ def _enabled_for_profile(spec: ToolSpec, profile: InstrumentProfile | None) -> b
     return True
 
 
+DRILL_TOOL_NAMES = (
+    "listen",
+    "get_frames",
+    "watch",
+    "measure_tempo",
+    "measure_dynamics",
+    "measure_trill",
+    "inspect_intonation",
+)
+
+
+def default_drill_tool_registry(profile: InstrumentProfile | str | None = None) -> ToolRegistry:
+    """Narrower registry for drill sessions.
+
+    Excludes the score-anchored tools (``inspect_bar``, ``inspect_note``,
+    ``inspect_chord``, ``inspect_voicing``, ``measure_vibrato``,
+    ``list_frames``) because a drill recording isn't matched to a score.
+    The included tools all work from raw audio / video / detected notes
+    without consulting ``score/score_map.json``.
+    """
+    instrument_profile = _coerce_profile(profile)
+    registry = ToolRegistry()
+    for spec in ALL_TOOL_SPECS:
+        if spec.name not in DRILL_TOOL_NAMES:
+            continue
+        if not _enabled_for_profile(spec, instrument_profile):
+            continue
+        registry.register(spec)
+    return registry
+
+
 def default_tool_registry(profile: InstrumentProfile | str | None = None) -> ToolRegistry:
     instrument_profile = _coerce_profile(profile)
     registry = ToolRegistry()

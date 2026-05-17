@@ -11,6 +11,10 @@ DESCRIPTION = "All evidence for one bar. args: {midi_measure}"
 
 
 def inspect_bar(storage: ObjectStorage, session: SessionRef, args: dict[str, Any]) -> dict[str, Any]:
+    from ._drill_guard import reject_if_drill
+    rejection = reject_if_drill(storage, session)
+    if rejection is not None:
+        return rejection
     midi_measure = int(args["midi_measure"])
     sm = read_json(storage, session, "score/score_map.json", None)
     if sm is None:

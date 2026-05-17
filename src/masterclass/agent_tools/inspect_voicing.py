@@ -11,6 +11,10 @@ DESCRIPTION = "Piano voicing/chord balance from the recording. args: {midi_measu
 
 
 def inspect_voicing(storage: ObjectStorage, session: SessionRef, args: dict[str, Any]) -> dict[str, Any]:
+    from ._drill_guard import reject_if_drill
+    rejection = reject_if_drill(storage, session)
+    if rejection is not None:
+        return rejection
     data = read_json(storage, session, "analysis/piano_voicing.json", None)
     if data is None:
         return {"error": "analysis/piano_voicing.json missing; run piano voicing analysis first"}

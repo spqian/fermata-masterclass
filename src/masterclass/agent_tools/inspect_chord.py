@@ -11,6 +11,10 @@ DESCRIPTION = "Spectral peak voicing at a moment (NUMERIC; not perceptual). args
 
 
 def inspect_chord(storage: ObjectStorage, session: SessionRef, args: dict[str, Any]) -> dict[str, Any]:
+    from ._drill_guard import reject_if_drill
+    rejection = reject_if_drill(storage, session)
+    if rejection is not None:
+        return rejection
     import librosa
     import numpy as np
     from scipy.signal import find_peaks
