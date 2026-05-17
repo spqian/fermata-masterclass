@@ -62,12 +62,29 @@ if BaseModel is not None:
     class ChatRequest(BaseModel):
         message: str
         conversation_id: str | None = None
+        comment_id: str | None = None
 
     class ProfilePatch(BaseModel):
         gemini_api_key: str | None = None
         clear_gemini_key: bool = False
         preferred_model: str | None = None
         pro_mode: bool | None = None
+
+
+_COMMENT_ID_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _comment_conversation_id(comment_id: str) -> str:
+    """Map a teacher-comment id (e.g. ``g_007``) to its reply-thread file id.
+
+    Path-sanitises the user-supplied id then prefixes ``cmt_`` so the chat
+    listing endpoint can later distinguish per-comment reply threads from the
+    main lesson conversation.
+    """
+    safe = _COMMENT_ID_SAFE.sub("_", (comment_id or "").strip())
+    if not safe:
+        raise ValueError("comment_id is required")
+    return f"cmt_{safe[:64]}"
 
 
 def _build_storage() -> ObjectStorage:
@@ -1739,6 +1756,15 @@ def create_app():
             if body.conversation_id:
                 conversation = load_conversation(storage, store, manifest, body.conversation_id)
                 check_conversation_turn_cap(conversation.user_message_count)
+            elif body.comment_id:
+                # Per-comment reply thread: derive a stable conversation id so
+                # follow-ups under the same comment go to the same file.
+                cmt_conv_id = _comment_conversation_id(body.comment_id)
+                try:
+                    conversation = load_conversation(storage, store, manifest, cmt_conv_id)
+                    check_conversation_turn_cap(conversation.user_message_count)
+                except FileNotFoundError:
+                    check_conversation_turn_cap(0)
             else:
                 check_conversation_turn_cap(0)
             check_user_quota(storage, ctx.tenant_id, ctx.user_id)
@@ -1751,13 +1777,15 @@ def create_app():
                 "MASTERCLASS_TEACH_MODEL",
                 "gemini-2.5-pro",
             )
+            effective_conv_id = body.conversation_id or (_comment_conversation_id(body.comment_id) if body.comment_id else None)
             result = run_chat_turn(
                 storage=storage,
                 store=store,
                 manifest=manifest,
                 provider=provider,
                 message=message,
-                conversation_id=body.conversation_id,
+                conversation_id=effective_conv_id,
+                comment_id=body.comment_id,
                 masterclasses=masterclasses,
                 config=ChatConfig(model=chat_model),
                 topic_guard_usage=topic.usage,
@@ -1815,6 +1843,30 @@ def create_app():
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
         return list_conversations(storage, store, manifest)
+
+    @app.get("/lessons/{session_id}/chat/comment/{comment_id}")
+    def lesson_chat_comment_history(
+        session_id: str,
+        comment_id: str,
+        ctx: TenantContext = Depends(tenant_from_header),
+    ) -> dict:
+        """Return the reply thread for one teacher comment, or an empty stub."""
+        try:
+            manifest = store.load_by_id(ctx, session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson not found") from exc
+        conv_id = _comment_conversation_id(comment_id)
+        try:
+            return load_conversation(storage, store, manifest, conv_id).to_json()
+        except FileNotFoundError:
+            return {
+                "conversation_id": conv_id,
+                "comment_id": comment_id,
+                "messages": [],
+                "exists": False,
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/lessons/{session_id}/chat/{conv_id}")
     def lesson_chat_history(session_id: str, conv_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:

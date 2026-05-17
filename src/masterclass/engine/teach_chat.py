@@ -64,6 +64,7 @@ def run_chat_turn(
     provider: LlmProvider,
     message: str,
     conversation_id: str | None = None,
+    comment_id: str | None = None,
     masterclasses: MasterclassStore | None = None,
     config: ChatConfig | None = None,
     topic_guard_usage: LlmUsage | None = None,
@@ -76,7 +77,9 @@ def run_chat_turn(
 
     profile = load_instrument_profile(manifest.instrument_profile)
     registry = default_tool_registry(profile)
-    system_instruction = build_chat_system_instruction(storage, store, manifest, conversation, profile=profile)
+    system_instruction = build_chat_system_instruction(
+        storage, store, manifest, conversation, profile=profile, comment_id=comment_id,
+    )
     contents, uploaded = _build_chat_contents(
         storage=storage,
         store=store,
@@ -116,6 +119,7 @@ def build_chat_system_instruction(
     conversation: ChatConversation | None = None,
     *,
     profile: Any | None = None,
+    comment_id: str | None = None,
 ) -> str:
     """Build the instrument-aware teacher prompt plus lesson-scoped chat rules."""
 
@@ -124,6 +128,27 @@ def build_chat_system_instruction(
     base = system_instruction_for_profile(profile, tool_catalog=tool_catalog_text(profile)) if profile is not None else "You are a careful music teacher."
     takeaway, comments_digest = _lesson_context(storage, store, manifest) if storage and store and manifest else ({}, [])
     history = _chat_history_text(conversation) if conversation else "(no previous chat messages)"
+    # If the student is replying to a specific comment, pin that comment into
+    # the prompt so the teacher answers in-context (like a Slack/Teams thread
+    # reply where the parent message is implicit).
+    focused_comment_block = ""
+    if comment_id:
+        focused = next(
+            (c for c in comments_digest if str(c.get("id") or "").strip() == comment_id.strip()),
+            None,
+        )
+        if focused is not None:
+            focused_comment_block = (
+                f"\n\n## You are replying inside the thread for comment `{comment_id}`\n\n"
+                f"{json.dumps(focused, ensure_ascii=False, indent=2)}\n\n"
+                "Treat the student's message as a follow-up to the comment above. "
+                "Keep your reply focused on that comment's scope — don't restart the lesson critique."
+            )
+        else:
+            focused_comment_block = (
+                f"\n\n## You are replying inside the thread for comment `{comment_id}`\n\n"
+                "(comment text not found in the digest; answer the student's question in the lesson's general context.)"
+            )
     return base + "\n\n" + (
         "## Chat mode\n\n"
         "You already gave the student a structured critique of THIS performance (their original lesson takeaway and comments are below). "
@@ -136,7 +161,8 @@ def build_chat_system_instruction(
         "Original lesson takeaway:\n"
         f"{json.dumps(takeaway, ensure_ascii=False, indent=2)}\n\n"
         "Original lesson comments (severity, bar references, summary only):\n"
-        f"{json.dumps(comments_digest, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(comments_digest, ensure_ascii=False, indent=2)}"
+        f"{focused_comment_block}\n\n"
         "Conversation so far (most recent last):\n"
         f"{history}"
     )
@@ -275,10 +301,13 @@ def _lesson_context(storage: ObjectStorage | None, store: SessionStore | None, m
         if not isinstance(c, dict):
             continue
         comments.append({
+            "id": c.get("id"),
             "severity": c.get("severity"),
+            "category": c.get("category"),
             "measure": c.get("measure"),
             "beat": c.get("beat"),
             "summary": c.get("summary"),
+            "text": c.get("text"),
         })
     return takeaway, comments[:40]
 

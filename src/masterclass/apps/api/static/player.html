@@ -407,25 +407,6 @@
     .tool-status.error { color: var(--danger); background: rgba(217,122,108,0.15); }
     .tool-call pre { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--ink-soft); }
 
-    .chat-panel {
-      margin-top: 12px;
-      border-top: 1px solid rgba(255,255,255,0.06);
-      padding-top: 10px;
-      display: flex;
-      flex-direction: column;
-      min-height: 220px;
-      max-height: 42%;
-    }
-    .chat-panel .panel-title { margin-bottom: 8px; }
-    .chat-messages {
-      flex: 1;
-      min-height: 90px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding-right: 3px;
-    }
     .chat-msg {
       max-width: 92%;
       padding: 9px 10px;
@@ -449,31 +430,84 @@
     .chat-msg .cost { margin-top: 6px; color: var(--ink-mute); font: 10px/1.3 "JetBrains Mono", monospace; }
     .chat-msg details { margin-top: 6px; color: var(--ink-mute); }
     .chat-msg summary { cursor: pointer; font: 11px/1.3 "JetBrains Mono", monospace; color: var(--gold); }
-    .chat-input-row { display: flex; gap: 8px; margin-top: 8px; align-items: flex-end; }
-    .chat-input-row textarea {
+
+    /* Per-comment reply thread (WhatsApp/Teams style) */
+    .comment-thread-toggle {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .comment-thread-toggle .reply-toggle {
+      background: transparent;
+      color: var(--ink-mute);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 12px;
+      padding: 2px 10px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .comment-thread-toggle .reply-toggle:hover {
+      color: var(--gold);
+      border-color: rgba(201,169,106,0.45);
+    }
+    .comment-thread-toggle .reply-count {
+      font-size: 11px;
+      color: var(--ink-mute);
+      font-family: "JetBrains Mono", monospace;
+    }
+    .comment-thread-toggle .reply-count:empty { display: none; }
+    .comment-thread-host {
+      margin-top: 8px;
+      padding: 10px;
+      background: rgba(0,0,0,0.18);
+      border-left: 2px solid rgba(201,169,106,0.35);
+      border-radius: 4px;
+    }
+    .thread { display: flex; flex-direction: column; gap: 8px; }
+    .thread-messages {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 320px;
+      overflow-y: auto;
+      padding-right: 3px;
+    }
+    .thread-empty {
+      font-size: 12px; color: var(--ink-mute); font-style: italic; padding: 4px 0;
+    }
+    .thread-input-row { display: flex; gap: 6px; align-items: flex-end; margin-top: 4px; }
+    .thread-input-row textarea {
       flex: 1;
-      min-height: 40px;
+      min-height: 36px;
       max-height: 110px;
       resize: none;
       background: rgba(0,0,0,0.25);
       color: var(--ink);
       border: 1px solid rgba(255,255,255,0.10);
       border-radius: 4px;
-      padding: 8px;
+      padding: 6px 8px;
       font: 13px/1.4 "Inter", sans-serif;
       outline: none;
     }
-    .chat-input-row textarea:focus { border-color: var(--gold); }
-    .chat-input-row button {
+    .thread-input-row textarea:focus { border-color: var(--gold); }
+    .thread-input-row button {
       background: rgba(201,169,106,0.16);
       color: var(--gold);
       border: 1px solid rgba(201,169,106,0.45);
       border-radius: 4px;
-      padding: 9px 12px;
+      padding: 7px 12px;
       font-weight: 600;
+      font-size: 12px;
       cursor: pointer;
     }
-    .chat-input-row button:disabled { opacity: 0.45; cursor: default; }
+    .thread-input-row button:disabled { opacity: 0.45; cursor: default; }
+
+    .lesson-general-card {
+      background: rgba(255,255,255,0.02);
+      border-left: 2px solid rgba(201,169,106,0.25);
+    }
+    .lesson-general-card .row1 { color: var(--ink-mute); }
 
     .lesson-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
     .lesson-section h4 {
@@ -626,14 +660,6 @@
         <div id="comments-host" class="comments-scroll">
           <div class="pending" id="pending"><span class="spinner"></span>Lesson is still processing…</div>
         </div>
-        <div class="chat-panel" id="chat-panel" style="display:none">
-          <div class="panel-title"><span>Chat with the teacher</span><span class="opus" id="chat-status">—</span></div>
-          <div class="chat-messages" id="chat-messages"></div>
-          <form class="chat-input-row" id="chat-form">
-            <textarea id="chat-input" maxlength="2048" placeholder="Ask a follow-up about this lesson…"></textarea>
-            <button type="submit" id="chat-send">Send</button>
-          </form>
-        </div>
       </div>
     </section>
 
@@ -726,12 +752,15 @@
     const commentCount = document.getElementById("comment-count");
     const costTag = document.getElementById("cost-tag");
     const scoreInfo = document.getElementById("score-info");
-    const chatPanel = document.getElementById("chat-panel");
-    const chatMessages = document.getElementById("chat-messages");
-    const chatForm = document.getElementById("chat-form");
-    const chatInput = document.getElementById("chat-input");
-    const chatSend = document.getElementById("chat-send");
-    const chatStatus = document.getElementById("chat-status");
+    // Reply-thread state: one in-flight conversation per teacher-comment id.
+    // `null` key represents the "lesson overall" general thread.
+    const threadState = new Map();
+    function threadKey(commentId) { return commentId || "__general__"; }
+    function getThread(commentId) {
+      const k = threadKey(commentId);
+      if (!threadState.has(k)) threadState.set(k, { busy: false, messages: [], loaded: false });
+      return threadState.get(k);
+    }
 
     const scoreStage = document.getElementById("score-stage");
     const scoreImg = document.getElementById("score-img");
@@ -759,8 +788,6 @@
     let severityVisible = new Set(["info", "warn", "alert"]);
     let lastCommentsPayload = null;
     let following = true;
-    let chatConversationId = null;
-    let chatBusy = false;
     toggleFollow.addEventListener("click", () => {
       following = !following;
       toggleFollow.textContent = following ? "Following ✓" : "Manual";
@@ -1077,49 +1104,6 @@
       renderAnchorMarkers();
     }
 
-    async function initChat() {
-      if (!chatPanel) return;
-      chatPanel.style.display = "flex";
-      chatStatus.textContent = "loading";
-      try {
-        const conversations = await fetchOptionalJson(`/lessons/${SESSION_ID}/chat`, []);
-        if (Array.isArray(conversations) && conversations.length) {
-          chatConversationId = conversations[0].conversation_id || conversations[0].id;
-          const history = await fetchJson(`/lessons/${SESSION_ID}/chat/${encodeURIComponent(chatConversationId)}`);
-          renderChatHistory(history.messages || []);
-          chatStatus.textContent = `${conversations[0].message_count || 0} msg`;
-        } else {
-          chatMessages.innerHTML = `<div class="empty">Ask a follow-up about this lesson.</div>`;
-          chatStatus.textContent = "new";
-        }
-      } catch (error) {
-        chatMessages.innerHTML = `<div class="chat-msg teacher error">${escapeHtml(error.message)}</div>`;
-        chatStatus.textContent = "error";
-      }
-    }
-
-    function renderChatHistory(messages) {
-      chatMessages.innerHTML = "";
-      for (const msg of messages || []) appendChatMessage(msg.role, msg.content, { tool_calls: msg.tool_calls || [], usage: msg.usage });
-      if (!chatMessages.children.length) chatMessages.innerHTML = `<div class="empty">Ask a follow-up about this lesson.</div>`;
-    }
-
-    function appendChatMessage(role, text, opts = {}) {
-      const empty = chatMessages.querySelector(".empty");
-      if (empty) empty.remove();
-      const div = document.createElement("div");
-      div.className = `chat-msg ${role === "user" ? "user" : "teacher"}${opts.error ? " error" : ""}`;
-      const toolCalls = opts.tool_calls || [];
-      const usage = opts.usage || null;
-      const toolHtml = toolCalls.length
-        ? `<details><summary>🔧 ${toolCalls.length} tool call${toolCalls.length === 1 ? "" : "s"}</summary>${toolCalls.map(c => `<div>${escapeHtml(toolCallLabel(c))}</div>`).join("")}</details>`
-        : "";
-      const costHtml = usage ? `<div class="cost">${escapeHtml(usage.model || "model")} · ${usage.input_tokens ?? "?"} in / ${usage.output_tokens ?? "?"} out · ${formatCost(usage.estimated_cost_usd)}</div>` : "";
-      div.innerHTML = `${role === "teacher" ? `<span class="gemini">✦</span>` : ""}${escapeHtml(text)}${toolHtml}${costHtml}`;
-      chatMessages.appendChild(div);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-    }
-
     function toolCallLabel(call) {
       const name = call.tool || call.name || "tool";
       const args = call.args || {};
@@ -1132,61 +1116,155 @@
       return Number.isFinite(n) ? `$${n.toFixed(4)}` : "$—";
     }
 
-    chatInput.addEventListener("input", () => {
-      chatInput.style.height = "auto";
-      chatInput.style.height = `${Math.min(chatInput.scrollHeight, 110)}px`;
-      const tooLarge = new Blob([chatInput.value]).size > 2048;
-      chatSend.disabled = chatBusy || tooLarge;
-      chatStatus.textContent = tooLarge ? "2KB max" : (chatConversationId ? "ready" : "new");
-    });
-    chatForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (chatBusy) return;
-      const message = (chatInput.value || "").trim();
-      if (!message) return;
-      if (new Blob([message]).size > 2048) {
-        appendChatMessage("teacher", "Please keep chat questions under 2 KB.", { error: true });
-        return;
+    // ----- Per-comment reply threads -----
+    function threadHtml(commentId) {
+      const placeholder = commentId
+        ? "Reply to this comment…"
+        : "Ask a general follow-up about this lesson…";
+      return `
+        <div class="thread" data-thread-cid="${commentId || ''}">
+          <div class="thread-messages"></div>
+          <form class="thread-input-row">
+            <textarea class="thread-input" maxlength="2048" placeholder="${placeholder}"></textarea>
+            <button type="submit" class="thread-send">Send</button>
+          </form>
+        </div>
+      `;
+    }
+
+    function appendThreadMessage(messagesEl, role, text, opts = {}) {
+      const div = document.createElement("div");
+      div.className = `chat-msg ${role === "user" ? "user" : "teacher"}${opts.error ? " error" : ""}`;
+      const toolCalls = opts.tool_calls || [];
+      const usage = opts.usage || null;
+      const toolHtml = toolCalls.length
+        ? `<details><summary>🔧 ${toolCalls.length} tool call${toolCalls.length === 1 ? "" : "s"}</summary>${toolCalls.map(c => `<div>${escapeHtml(toolCallLabel(c))}</div>`).join("")}</details>`
+        : "";
+      const costHtml = usage ? `<div class="cost">${escapeHtml(usage.model || "model")} · ${usage.input_tokens ?? "?"} in / ${usage.output_tokens ?? "?"} out · ${formatCost(usage.estimated_cost_usd)}</div>` : "";
+      div.innerHTML = `${role === "teacher" ? `<span class="gemini">✦</span>` : ""}${escapeHtml(text)}${toolHtml}${costHtml}`;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return div;
+    }
+
+    async function loadThreadHistory(commentId, messagesEl) {
+      const state = getThread(commentId);
+      if (state.loaded) return;
+      state.loaded = true;
+      messagesEl.innerHTML = "";
+      try {
+        let history;
+        if (commentId) {
+          history = await fetchOptionalJson(`/lessons/${SESSION_ID}/chat/comment/${encodeURIComponent(commentId)}`, { messages: [] });
+        } else {
+          // General lesson thread: load the most recent non-comment conversation.
+          const conversations = await fetchOptionalJson(`/lessons/${SESSION_ID}/chat`, []);
+          const general = (conversations || []).find(c => !(c.conversation_id || c.id || "").startsWith("cmt_"));
+          if (general) {
+            history = await fetchJson(`/lessons/${SESSION_ID}/chat/${encodeURIComponent(general.conversation_id || general.id)}`);
+            state.conversationId = general.conversation_id || general.id;
+          } else {
+            history = { messages: [] };
+          }
+        }
+        state.messages = history.messages || [];
+        for (const msg of state.messages) {
+          appendThreadMessage(messagesEl, msg.role, msg.content, { tool_calls: msg.tool_calls || [], usage: msg.usage });
+        }
+        if (!state.messages.length) {
+          const empty = document.createElement("div");
+          empty.className = "thread-empty";
+          empty.textContent = commentId
+            ? "No replies yet. Ask the teacher a follow-up about this specific comment."
+            : "No general questions yet. Ask the teacher anything about this lesson.";
+          messagesEl.appendChild(empty);
+        }
+      } catch (error) {
+        appendThreadMessage(messagesEl, "teacher", error.message || String(error), { error: true });
       }
-      chatBusy = true;
-      chatSend.disabled = true;
-      chatInput.value = "";
-      chatInput.style.height = "auto";
-      appendChatMessage("user", message);
-      const typing = document.createElement("div");
-      typing.className = "chat-msg teacher";
-      typing.innerHTML = `<span class="gemini">✦</span><span class="typing-text">Thinking…</span>`;
-      chatMessages.appendChild(typing);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-      const typingText = typing.querySelector(".typing-text");
-      const thinkingStart = Date.now();
-      const thinkingTimer = setInterval(() => {
-        const sec = Math.floor((Date.now() - thinkingStart) / 1000);
-        let label;
-        if (sec < 20) label = `Thinking… ${sec}s`;
-        else if (sec < 60) label = `Thinking… ${sec}s — agentic responses can take 30-90s`;
-        else if (sec < 120) label = `Thinking… ${sec}s — still working (Gemini may be slow during peak hours)`;
-        else label = `Thinking… ${sec}s — this is unusually long; you can keep waiting or refresh`;
-        if (typingText) typingText.textContent = label;
+    }
+
+    async function sendThreadMessage(commentId, threadEl, message) {
+      const state = getThread(commentId);
+      if (state.busy) return;
+      state.busy = true;
+      const messagesEl = threadEl.querySelector(".thread-messages");
+      const sendBtn = threadEl.querySelector(".thread-send");
+      const inputEl = threadEl.querySelector(".thread-input");
+      const emptyEl = messagesEl.querySelector(".thread-empty");
+      if (emptyEl) emptyEl.remove();
+      sendBtn.disabled = true;
+      appendThreadMessage(messagesEl, "user", message);
+      const typing = appendThreadMessage(messagesEl, "teacher", "Thinking…");
+      typing.classList.add("typing");
+      const typingText = typing;
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        const sec = Math.floor((Date.now() - startedAt) / 1000);
+        let label = sec < 20 ? `Thinking… ${sec}s`
+          : sec < 60 ? `Thinking… ${sec}s — agentic responses can take 30-90s`
+          : sec < 120 ? `Thinking… ${sec}s — still working (Gemini may be slow during peak hours)`
+          : `Thinking… ${sec}s — this is unusually long; you can keep waiting or refresh`;
+        typingText.innerHTML = `<span class="gemini">✦</span>${escapeHtml(label)}`;
       }, 1000);
       try {
-        const payload = await postJson(`/lessons/${SESSION_ID}/chat`, { message, conversation_id: chatConversationId });
-        clearInterval(thinkingTimer);
+        const body = { message };
+        if (commentId) body.comment_id = commentId;
+        else if (state.conversationId) body.conversation_id = state.conversationId;
+        const payload = await postJson(`/lessons/${SESSION_ID}/chat`, body);
+        clearInterval(timer);
         typing.remove();
-        chatConversationId = payload.conversation_id || chatConversationId;
-        appendChatMessage("teacher", payload.reply || "", { tool_calls: payload.tool_calls || [], usage: payload.usage });
-        chatStatus.textContent = "ready";
+        if (payload.conversation_id) state.conversationId = payload.conversation_id;
+        appendThreadMessage(messagesEl, "teacher", payload.reply || "", { tool_calls: payload.tool_calls || [], usage: payload.usage });
+        // Bump the reply count badge on the comment card if present.
+        const card = commentId ? document.querySelector(`.comment[data-id="${commentId}"]`) : document.querySelector(".lesson-general-card");
+        if (card) {
+          const badge = card.querySelector(".reply-count");
+          if (badge) {
+            const n = (parseInt(badge.dataset.n || "0", 10) || 0) + 2;
+            badge.dataset.n = String(n);
+            badge.textContent = `${n} ${n === 1 ? "message" : "messages"}`;
+          }
+        }
       } catch (error) {
-        clearInterval(thinkingTimer);
+        clearInterval(timer);
         typing.remove();
-        appendChatMessage("teacher", error.message, { error: true, usage: error.payload && error.payload.usage });
-        chatStatus.textContent = error.status || "error";
+        appendThreadMessage(messagesEl, "teacher", error.message || String(error), { error: true, usage: error.payload && error.payload.usage });
       } finally {
-        chatBusy = false;
-        chatSend.disabled = false;
-        chatInput.focus();
+        state.busy = false;
+        sendBtn.disabled = false;
+        inputEl.focus();
       }
-    });
+    }
+
+    function wireThread(threadEl) {
+      const commentId = threadEl.dataset.threadCid || null;
+      const messagesEl = threadEl.querySelector(".thread-messages");
+      const formEl = threadEl.querySelector(".thread-input-row");
+      const inputEl = threadEl.querySelector(".thread-input");
+      // Lazy-load history when the thread is first opened.
+      loadThreadHistory(commentId, messagesEl);
+      inputEl.addEventListener("input", () => {
+        inputEl.style.height = "auto";
+        inputEl.style.height = `${Math.min(inputEl.scrollHeight, 110)}px`;
+      });
+      formEl.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const msg = (inputEl.value || "").trim();
+        if (!msg) return;
+        if (new Blob([msg]).size > 2048) {
+          appendThreadMessage(messagesEl, "teacher", "Please keep questions under 2 KB.", { error: true });
+          return;
+        }
+        inputEl.value = "";
+        inputEl.style.height = "auto";
+        sendThreadMessage(commentId, threadEl, msg);
+      });
+      // Cmd/Ctrl+Enter submits.
+      inputEl.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") formEl.requestSubmit();
+      });
+    }
 
     function scoreMapBarsForCurrentSystem() {
       if (!scoreMap || !Array.isArray(scoreMap.bars) || !currentPage || !currentSystem) return [];
@@ -1433,11 +1511,33 @@
             <div class="summary-line">${escapeHtml(c.summary || "")}</div>
             <div class="text">${escapeHtml(c.text || "")}</div>
             ${refsHtml}
+            <div class="comment-thread-toggle">
+              <button type="button" class="reply-toggle" data-cid="${c.id}">💬 Reply</button>
+              <span class="reply-count" data-n="0"></span>
+            </div>
+            <div class="comment-thread-host" data-cid="${c.id}" hidden></div>
           </li>
         `;
-      }).join("");
+      }).join("") + `
+        <li class="comment lesson-general-card" data-id="__general__">
+          <div class="row1">
+            <span class="cat">general</span>
+            <span class="summary-line" style="flex:1">Ask a general follow-up about this lesson</span>
+          </div>
+          <div class="text">Not tied to a specific comment? Start a general thread with the teacher about this lesson.</div>
+          <div class="comment-thread-toggle">
+            <button type="button" class="reply-toggle" data-cid="">💬 Open</button>
+            <span class="reply-count" data-n="0"></span>
+          </div>
+          <div class="comment-thread-host" data-cid="" hidden></div>
+        </li>
+      `;
       for (const li of list.querySelectorAll(".comment")) {
-        li.addEventListener("click", () => {
+        if (li.classList.contains("lesson-general-card")) continue;
+        li.addEventListener("click", (event) => {
+          // Don't seek when the user is interacting with the inline reply
+          // thread (toggle button, message bubbles, input, send button).
+          if (event.target.closest(".comment-thread-toggle, .comment-thread-host, .ref-chip")) return;
           const c = comments.find(x => x.id === li.dataset.id);
           if (!c) return;
           seekTo(parseFloat(li.dataset.start));
@@ -1452,6 +1552,51 @@
         });
         li.addEventListener("mouseleave", clearNoteRefHighlights);
       }
+      // Hook the reply toggles (both per-comment and the bottom general card).
+      for (const btn of list.querySelectorAll(".reply-toggle")) {
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const cid = btn.dataset.cid || "";
+          const host = list.querySelector(`.comment-thread-host[data-cid="${cid}"]`);
+          if (!host) return;
+          if (host.hidden) {
+            host.hidden = false;
+            if (!host.dataset.mounted) {
+              host.dataset.mounted = "1";
+              host.innerHTML = threadHtml(cid || null);
+              const threadEl = host.querySelector(".thread");
+              wireThread(threadEl);
+            }
+            btn.textContent = "💬 Hide";
+            host.querySelector(".thread-input")?.focus();
+          } else {
+            host.hidden = true;
+            btn.textContent = cid ? "💬 Reply" : "💬 Open";
+          }
+        });
+      }
+      // Fetch conversation list once to surface reply counts on cards.
+      fetchOptionalJson(`/lessons/${SESSION_ID}/chat`, []).then(convs => {
+        if (!Array.isArray(convs)) return;
+        for (const conv of convs) {
+          const id = conv.conversation_id || conv.id || "";
+          const n = conv.message_count || 0;
+          if (!n) continue;
+          let card;
+          if (id.startsWith("cmt_")) {
+            const cid = id.slice(4);
+            card = list.querySelector(`.comment[data-id="${cid}"]`);
+          } else {
+            card = list.querySelector(".lesson-general-card");
+          }
+          if (!card) continue;
+          const badge = card.querySelector(".reply-count");
+          if (badge) {
+            badge.dataset.n = String(n);
+            badge.textContent = `${n} ${n === 1 ? "message" : "messages"}`;
+          }
+        }
+      }).catch(() => {});
       applySeverityFilter();
       for (const chip of list.querySelectorAll(".ref-chip")) {
         chip.addEventListener("mouseenter", () => {
@@ -1596,7 +1741,6 @@
           renderScore(prep);
           renderComments(c);
           renderToolCalls(tcalls);
-          initChat();
           stopPolling();
         } else if (session.state === "failed") {
           commentsHost.innerHTML = `<div class="empty" style="color:var(--danger)">Lesson processing failed. Check the home page.</div>`;
