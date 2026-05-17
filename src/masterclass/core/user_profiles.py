@@ -7,9 +7,9 @@ from typing import Literal
 from masterclass.auth.encryption import UserKeyCipher
 from masterclass.storage.base import ObjectStorage
 
-PreferredModel = Literal["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro"]
+PreferredModel = Literal["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro-preview"]
 DEFAULT_MODEL: PreferredModel = "gemini-2.5-pro"
-VALID_MODELS: set[str] = {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro"}
+VALID_MODELS: set[str] = {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro-preview"}
 
 
 def _now() -> str:
