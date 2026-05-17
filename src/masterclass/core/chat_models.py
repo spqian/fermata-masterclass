@@ -129,9 +129,32 @@ def get_or_create_conversation(
     manifest: SessionManifest,
     conversation_id: str | None,
 ) -> ChatConversation:
-    if conversation_id:
+    """Load an existing conversation or create a new one.
+
+    Behaviour:
+    * ``conversation_id`` is None → always create a fresh conversation with
+      a random uuid id.
+    * ``conversation_id`` provided and the conversation file exists → load
+      and return it.
+    * ``conversation_id`` provided but no file exists → create a new
+      conversation USING that explicit id, so callers (e.g. per-comment
+      reply threads with deterministic ``cmt_<id>`` keys) can route the
+      first reply into the right file. Previously this branch raised
+      FileNotFoundError, which broke first-replies on comment threads.
+    """
+    if not conversation_id:
+        return new_conversation(manifest)
+    try:
         return load_conversation(storage, store, manifest, conversation_id)
-    return new_conversation(manifest)
+    except FileNotFoundError:
+        # Validate the id is path-safe; we're about to use it as a file
+        # name. ``safe_conversation_id`` raises ValueError on bad input.
+        safe_conversation_id(conversation_id)
+        return ChatConversation(
+            conversation_id=conversation_id,
+            session_id=manifest.session.session_id,
+            user_id=manifest.session.user_id,
+        )
 
 
 def list_conversations(storage: ObjectStorage, store: SessionStore, manifest: SessionManifest) -> list[dict[str, Any]]:
