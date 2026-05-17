@@ -21,6 +21,11 @@ from masterclass.storage.base import ObjectStorage
 
 
 GEMINI_CHAT_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
+    "gemini-3.1-pro": {
+        "input_le_200k": 1.25,
+        "input_gt_200k": 5.00,
+        "output": 12.00,
+    },
     "gemini-2.5-pro": {
         "input_le_200k": 1.25,
         "input_gt_200k": 5.00,
@@ -164,10 +169,12 @@ def chat_usage_dict(usage: LlmUsage | None, *, guard_usage: LlmUsage | None = No
 def estimate_chat_cost(model: str, input_tokens: int | None, output_tokens: int | None) -> float | None:
     if input_tokens is None or output_tokens is None:
         return None
-    if model.startswith("gemini-2.5-pro"):
-        table = GEMINI_CHAT_PRICING_PER_MILLION["gemini-2.5-pro"]
-        input_rate = table["input_gt_200k"] if input_tokens > 200_000 else table["input_le_200k"]
-        return round((input_tokens * input_rate + output_tokens * table["output"]) / 1_000_000, 6)
+    # Match model name to pricing table (handles versioned names like "gemini-3.1-pro-preview")
+    for prefix in ("gemini-3.1-pro", "gemini-3-pro", "gemini-2.5-pro"):
+        if model.startswith(prefix):
+            table = GEMINI_CHAT_PRICING_PER_MILLION.get(prefix) or GEMINI_CHAT_PRICING_PER_MILLION.get("gemini-2.5-pro")
+            input_rate = table["input_gt_200k"] if input_tokens > 200_000 else table["input_le_200k"]
+            return round((input_tokens * input_rate + output_tokens * table["output"]) / 1_000_000, 6)
     if model.startswith("gemini-2.5-flash"):
         table = GEMINI_CHAT_PRICING_PER_MILLION["gemini-2.5-flash"]
         return round((input_tokens * table["input"] + output_tokens * table["output"]) / 1_000_000, 6)

@@ -7,9 +7,9 @@ from typing import Literal
 from masterclass.auth.encryption import UserKeyCipher
 from masterclass.storage.base import ObjectStorage
 
-PreferredModel = Literal["gemini-2.5-pro", "gemini-2.5-flash"]
+PreferredModel = Literal["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro"]
 DEFAULT_MODEL: PreferredModel = "gemini-2.5-pro"
-VALID_MODELS: set[str] = {"gemini-2.5-pro", "gemini-2.5-flash"}
+VALID_MODELS: set[str] = {"gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-pro"}
 
 
 def _now() -> str:
@@ -116,7 +116,7 @@ class UserProfileStore:
 
     def set_preferred_model(self, google_sub: str, model: str) -> UserProfile:
         if model not in VALID_MODELS:
-            raise ValueError("preferred_model must be gemini-2.5-pro or gemini-2.5-flash")
+            raise ValueError("preferred_model must be one of: " + ", ".join(sorted(VALID_MODELS)))
         profile = self.load(google_sub)
         profile.preferred_model = model  # type: ignore[assignment]
         return self.upsert(profile)

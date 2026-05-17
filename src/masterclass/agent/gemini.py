@@ -177,7 +177,8 @@ class SharedKeyGeminiProvider:
         from google.genai import errors as genai_errors
 
         last_error: Exception | None = None
-        for attempt in range(1, 4):
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = client.models.generate_content(model=model, contents=history + [content], config=config)
                 history.append(content)
@@ -186,14 +187,16 @@ class SharedKeyGeminiProvider:
                 return response
             except genai_errors.ServerError as exc:
                 last_error = exc
-                time.sleep(min(20, 5 * attempt))
+                delay = min(90, 10 * (2 ** (attempt - 1)))  # 10, 20, 40, 80, 90
+                time.sleep(delay)
             except genai_errors.ClientError as exc:
                 last_error = exc
                 if getattr(exc, "code", None) == 429:
-                    time.sleep(min(30, 10 * attempt))
+                    delay = min(90, 15 * (2 ** (attempt - 1)))  # 15, 30, 60, 90, 90
+                    time.sleep(delay)
                     continue
                 raise
-        raise RuntimeError(f"Gemini request failed after retries: {type(last_error).__name__}: {last_error}")
+        raise RuntimeError(f"Gemini request failed after {max_attempts} retries: {type(last_error).__name__}: {last_error}")
 
 
 def _to_part(types: Any, part: Any) -> Any:

@@ -432,13 +432,15 @@ def create_app():
         except Exception:
             logging.exception("lesson background jobs failed for %s", session_id)
 
-    def _spawn(target, *args) -> None:
+    def _spawn(target, *args, **kwargs) -> None:
         """Run a background job in a real OS thread so multiple jobs run in parallel.
         FastAPI's BackgroundTasks runs handlers sequentially, which can starve
         independent tasks (e.g. score_prep should not block the lesson upload
         response)."""
         import threading
-        threading.Thread(target=target, args=args, daemon=True).start()
+        import functools
+        fn = functools.partial(target, *args, **kwargs) if kwargs else target
+        threading.Thread(target=fn if kwargs else target, args=() if kwargs else args, daemon=True).start()
 
     def _run_score_prep(masterclass_id: str, tenant_id: str, user_id: str) -> None:
         try:

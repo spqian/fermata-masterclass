@@ -328,7 +328,8 @@
     });
     return osmdLoadingPromise;
   }
-  let musicXMLLoaded = false;
+   let musicXMLLoaded = false;
+  let _musicXMLPayload = null;
   async function loadMusicXML() {
     if (musicXMLLoaded) return;
     const badge = document.getElementById("musicxml-badge");
@@ -341,6 +342,7 @@
       const r = await fetch(`/lessons/${encodeURIComponent(SESSION_ID)}/debug/musicxml`);
       if (!r.ok) throw new Error(`MusicXML fetch failed: ${r.status}`);
       const payload = await r.text();
+      _musicXMLPayload = payload;
       render.style.display = "block";
       render.innerHTML = "";
       const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(render, {
@@ -356,14 +358,29 @@
       badge.textContent = "rendered";
       musicXMLLoaded = true;
     } catch (err) {
-      badge.textContent = "error";
-      errBox.style.display = "block";
-      // OSMD sometimes throws a plain object ({ key, message, ... }) instead
-      // of an Error, so produce a useful string in either case.
+      // OSMD failed to render — fall back to showing the raw XML in a
+      // scrollable <pre> so the user can still inspect the OMR output.
       const msg = err && err.message ? err.message
         : (typeof err === "string" ? err
         : (err && typeof err === "object" ? JSON.stringify(err) : String(err)));
-      errBox.textContent = msg;
+      if (_musicXMLPayload) {
+        badge.textContent = "raw XML (OSMD failed)";
+        errBox.style.display = "block";
+        errBox.textContent = "OSMD render failed: " + msg + ". Showing raw XML below.";
+        render.style.display = "block";
+        render.style.background = "rgba(0,0,0,.32)";
+        render.style.color = "var(--ink-soft)";
+        const pre = document.createElement("pre");
+        pre.style.cssText = "font-size:11px;max-height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-word;";
+        pre.textContent = _musicXMLPayload.substring(0, 200000);
+        render.innerHTML = "";
+        render.appendChild(pre);
+        musicXMLLoaded = true;
+      } else {
+        badge.textContent = "error";
+        errBox.style.display = "block";
+        errBox.textContent = msg;
+      }
     }
   }
 
