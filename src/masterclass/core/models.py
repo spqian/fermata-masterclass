@@ -125,6 +125,11 @@ class MasterclassManifest:
         )
 
 
+SESSION_KIND_LESSON = "lesson"
+SESSION_KIND_DRILL = "drill"
+_SESSION_KINDS = (SESSION_KIND_LESSON, SESSION_KIND_DRILL)
+
+
 @dataclass
 class SessionManifest:
     schema_version: int
@@ -142,6 +147,11 @@ class SessionManifest:
     metadata: dict[str, Any] = field(default_factory=dict)
     llm_usage: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
+    # New in the drill feature: lessons (default) get the full multimodal
+    # teach pipeline; drills get a lighter pipeline that doesn't try to
+    # score-match the recording. Existing manifests with no ``kind`` field
+    # are read back as ``"lesson"`` so old data keeps working.
+    kind: str = SESSION_KIND_LESSON
 
     def touch(self) -> None:
         self.updated_at = datetime.now(UTC).isoformat()
@@ -167,11 +177,15 @@ class SessionManifest:
             "metadata": dict(self.metadata),
             "llm_usage": list(self.llm_usage),
             "errors": list(self.errors),
+            "kind": self.kind,
         }
 
     @staticmethod
     def from_json(data: dict[str, Any]) -> "SessionManifest":
         session = data["session"]
+        kind = str(data.get("kind") or SESSION_KIND_LESSON).strip().lower()
+        if kind not in _SESSION_KINDS:
+            kind = SESSION_KIND_LESSON
         return SessionManifest(
             schema_version=int(data["schema_version"]),
             session=SessionRef(session["tenant_id"], session["user_id"], session["session_id"]),
@@ -188,6 +202,7 @@ class SessionManifest:
             metadata=dict(data.get("metadata", {})),
             llm_usage=list(data.get("llm_usage", [])),
             errors=list(data.get("errors", [])),
+            kind=kind,
         )
 
 

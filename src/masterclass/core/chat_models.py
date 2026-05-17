@@ -22,6 +22,12 @@ class ChatMessage:
     ts: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, Any] | None = None
+    # Free-form bag for heterogeneous events that share one conversation
+    # file. Drill uploads tag entries with ``{"type": "drill_upload",
+    # "drill_session_id": ..., "state": "processing"}``; drill results tag
+    # with ``{"type": "drill_result", "drill_session_id": ...}``. Plain
+    # chat messages leave it empty.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         data: dict[str, Any] = {"role": self.role, "content": self.content, "ts": self.ts}
@@ -29,6 +35,8 @@ class ChatMessage:
             data["tool_calls"] = list(self.tool_calls)
         if self.usage is not None:
             data["usage"] = dict(self.usage)
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
         return data
 
     @staticmethod
@@ -36,12 +44,14 @@ class ChatMessage:
         role = str(data.get("role") or "").strip().lower()
         if role not in _ROLE_VALUES:
             role = "system"
+        meta = data.get("metadata")
         return ChatMessage(
             role=role,
             content=str(data.get("content") or ""),
             ts=str(data.get("ts") or datetime.now(UTC).isoformat()),
             tool_calls=list(data.get("tool_calls") or []),
             usage=dict(data["usage"]) if isinstance(data.get("usage"), dict) else None,
+            metadata=dict(meta) if isinstance(meta, dict) else {},
         )
 
 

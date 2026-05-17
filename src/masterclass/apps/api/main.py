@@ -20,8 +20,9 @@ from masterclass.auth.google_oauth import (
 from masterclass.core.artifact_catalog import ArtifactCatalog
 from masterclass.core.jobs import JobStore, QueuedJobType
 from masterclass.core.chat_models import delete_conversation, list_conversations, load_conversation
+from masterclass.core.conversation_lock import conversation_lock
 from masterclass.core.masterclasses import MasterclassStore
-from masterclass.core.models import JobState
+from masterclass.core.models import JobState, SESSION_KIND_DRILL, SESSION_KIND_LESSON
 from masterclass.core.models import TenantContext
 from masterclass.core.sessions import SessionStore
 from masterclass.core.user_profiles import DEFAULT_MODEL, UserProfileStore
@@ -85,6 +86,49 @@ def _comment_conversation_id(comment_id: str) -> str:
     if not safe:
         raise ValueError("comment_id is required")
     return f"cmt_{safe[:64]}"
+
+
+def _require_lesson_kind(manifest) -> None:
+    """Reject access if the loaded session is a drill, not a lesson.
+
+    Every /lessons/{id}/* endpoint runs this guard so drill sessions
+    (uploaded via /lessons/{id}/comments/{cid}/practice-clip and the
+    masterclass-level practice-clip endpoint) can't be mistaken for
+    lessons and pushed through the full teach pipeline, which would
+    fail score-matching against a recording of a different passage.
+    """
+    kind = getattr(manifest, "kind", SESSION_KIND_LESSON) or SESSION_KIND_LESSON
+    if kind != SESSION_KIND_LESSON:
+        from fastapi import HTTPException  # local import: tests stub FastAPI
+        raise HTTPException(
+            status_code=409,
+            detail=f"session is a {kind}, not a lesson; use the /drills/* endpoints",
+        )
+
+
+def _require_drill_kind(manifest) -> None:
+    kind = getattr(manifest, "kind", SESSION_KIND_LESSON) or SESSION_KIND_LESSON
+    if kind != SESSION_KIND_DRILL:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=409,
+            detail=f"session is a {kind}, not a drill",
+        )
+
+
+def _load_lesson_manifest(store, ctx, session_id):
+    """Load a session, 404 if missing, 409 if it's a drill not a lesson.
+
+    Used by every /lessons/{id}/* endpoint so the drill-vs-lesson split
+    has one chokepoint.
+    """
+    from fastapi import HTTPException
+    try:
+        manifest = store.load_by_id(ctx, session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="lesson not found") from exc
+    _require_lesson_kind(manifest)
+    return manifest
 
 
 def _build_storage() -> ObjectStorage:
@@ -1088,6 +1132,7 @@ def create_app():
     def lesson_manifest(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
         masterclass_id = manifest.metadata.get("masterclass_id")
@@ -1103,6 +1148,7 @@ def create_app():
     def lesson_comments(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
         key = manifest.artifacts.get("lesson/comments_enriched.json")
@@ -1209,6 +1255,7 @@ def create_app():
         from fastapi.responses import FileResponse
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
         video_key = manifest.artifacts.get("input/source_video")
@@ -1228,6 +1275,7 @@ def create_app():
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> Response:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         masterclass_id = manifest.metadata.get("masterclass_id")
         if not masterclass_id:
             raise HTTPException(status_code=404, detail="lesson is not linked to a masterclass")
@@ -1244,6 +1292,7 @@ def create_app():
     @app.get("/lessons/{session_id}/score-prep")
     def lesson_score_prep(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         masterclass_id = manifest.metadata.get("masterclass_id")
         if not masterclass_id:
             return {}
@@ -1259,6 +1308,7 @@ def create_app():
     @app.get("/lessons/{session_id}/score-map")
     def lesson_score_map(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         key = manifest.artifacts.get("score/score_map.json")
         if key and storage.exists(key):
             return storage.read_json(key)
@@ -1270,6 +1320,7 @@ def create_app():
     @app.get("/lessons/{session_id}/tool-calls")
     def lesson_tool_calls(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         key = manifest.artifacts.get("analysis/teach_tool_calls.json")
         if key and storage.exists(key):
             payload = storage.read_json(key)
@@ -1308,6 +1359,7 @@ def create_app():
     def _load_lesson_artifact(ctx: TenantContext, session_id: str, rel: str):
         """Read a per-lesson artifact via the same dual-path lookup other routes use."""
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         key = manifest.artifacts.get(rel)
         if key and storage.exists(key):
             return manifest, key
@@ -1343,6 +1395,7 @@ def create_app():
         browser-side renderer doesn't have to deal with two formats.
         """
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         masterclass_id = manifest.metadata.get("masterclass_id")
         if not masterclass_id:
             raise HTTPException(status_code=404, detail="lesson has no masterclass binding")
@@ -1423,6 +1476,7 @@ def create_app():
         """
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
 
@@ -1692,6 +1746,7 @@ def create_app():
         ctx: TenantContext = Depends(_pro_ctx),
     ) -> Response:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         audio_key = manifest.artifacts.get("artifacts/audio_16k.wav") or manifest.artifacts.get("artifacts/audio.wav")
         if not audio_key:
             audio_key = store.artifact_key(manifest.session, "artifacts/audio_16k.wav")
@@ -1740,6 +1795,7 @@ def create_app():
         if not _WATCH_CLIP_RE.match(clip_name or ""):
             raise HTTPException(status_code=400, detail="invalid clip filename")
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         key = store.artifact_key(manifest.session, f"watch_clips/{clip_name}")
         if not storage.exists(key):
             raise HTTPException(status_code=404, detail="watch clip not found")
@@ -1753,6 +1809,7 @@ def create_app():
     def debug_list_watch_clips(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
         """List the watch-clip filenames Gemini was given for this lesson."""
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         if not isinstance(storage, LocalObjectStorage):
             return {"clips": [], "note": "listing only supported on local storage"}
         prefix = store.artifact_key(manifest.session, "watch_clips")
@@ -1789,6 +1846,7 @@ def create_app():
         watching the technical viewer.
         """
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         try:
             summary = run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest)
         except ValueError as exc:
@@ -1814,6 +1872,7 @@ def create_app():
         wasteful in that case.
         """
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         masterclass_id = manifest.metadata.get("masterclass_id")
         # Wipe failed-stage errors so the UI shows them as running again.
         cleared: list[str] = []
@@ -1853,6 +1912,7 @@ def create_app():
         spawns.
         """
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         masterclass_id = manifest.metadata.get("masterclass_id")
         # Reset stale "running" markers so the UI starts polling fresh.
         for stage_state in (
@@ -1882,6 +1942,7 @@ def create_app():
                 raise HTTPException(status_code=400, detail="message is required")
             check_message_size(message)
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
             if manifest.state != JobState.READY:
                 raise HTTPException(status_code=409, detail="lesson is not ready for chat yet")
             if body.conversation_id:
@@ -1971,6 +2032,7 @@ def create_app():
     def lesson_chat_list(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> list[dict]:
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
         return list_conversations(storage, store, manifest)
@@ -1984,6 +2046,7 @@ def create_app():
         """Return the reply thread for one teacher comment, or an empty stub."""
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson not found") from exc
         conv_id = _comment_conversation_id(comment_id)
@@ -2003,6 +2066,7 @@ def create_app():
     def lesson_chat_history(session_id: str, conv_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
             return load_conversation(storage, store, manifest, conv_id).to_json()
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="lesson or conversation not found") from exc
@@ -2013,6 +2077,7 @@ def create_app():
     def lesson_chat_delete(session_id: str, conv_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
         try:
             manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
             delete_conversation(storage, store, manifest, conv_id)
             return {"deleted": True, "conversation_id": conv_id}
         except FileNotFoundError as exc:
@@ -2027,6 +2092,7 @@ def create_app():
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         filename = Path(file.filename or manifest.source_filename or "source.mp4").name
         key = store.artifact_key(manifest.session, f"input/{filename}")
         content = await file.read()
@@ -2050,6 +2116,7 @@ def create_app():
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
         manifest = store.load_by_id(ctx, session_id)
+        _require_lesson_kind(manifest)
         job = jobs.enqueue(manifest.session, job_type, (body.payload if body else {}))
         return job.to_json()
 
