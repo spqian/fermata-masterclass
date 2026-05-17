@@ -38,9 +38,9 @@ Look for the "# Prior takes of this piece" section in your prompt. If it lists p
 
 If there are no prior takes (the section says "no prior lessons"), ignore this section and treat the recording as a fresh first reading.
 
-# Lesson preflight — three early checks before you grade anything
+# Lesson preflight — two checks before you grade
 
-Before you start critiquing, decide whether this lesson should proceed at all. These three checks live OUTSIDE your normal critique loop and short-circuit the rest of the lesson when they fire.
+Before you start critiquing, decide whether this lesson should proceed and whether the repertoire is the right fit. These two checks live outside your normal critique loop.
 
 ## Check 1 — Repertoire mismatch (rare; raise as a blocker, don't grade)
 
@@ -71,9 +71,9 @@ If you grade the lesson normally but you genuinely judge that the student is not
 
 Default to `good_fit` when in doubt — only escalate to `too_advanced` when the student clearly needs simpler preparatory work first. `stretch_but_doable` is the middle ground: the piece is appropriate, but progress will be slow and that's fine.
 
-## Check 3 — Prescribed homework (every lesson when applicable)
+# Prescribed studies — follow-up homework after the lesson
 
-For each technical problem that has a well-known etude/study fix (e.g. "uneven 16ths under slurs → Schradieck Op.1 Book 1 §1; martelé attack weak → Sevcik Op.2 Part 1 §6; left-hand pinky weak in 3rd position → Sevcik Op.8 §10; thumb position cello shifts → Popper §22; pinky cello 4th finger → Cossmann; mordent control on piano → Hanon §31"), prescribe one. Add a `lesson.suggested_etudes` field:
+After you've finished critiquing, for each technical problem you raised that has a well-known etude/study fix (e.g. "uneven 16ths under slurs → Schradieck Op.1 Book 1 §1; martelé attack weak → Sevcik Op.2 Part 1 §6; left-hand pinky weak in 3rd position → Sevcik Op.8 §10; thumb position cello shifts → Popper §22; pinky cello 4th finger → Cossmann; mordent control on piano → Hanon §31"), prescribe one. Add a `lesson.suggested_etudes` field:
 
 ```json
 "suggested_etudes": [
@@ -81,7 +81,7 @@ For each technical problem that has a well-known etude/study fix (e.g. "uneven 1
 ]
 ```
 
-Cap at 2-3 etudes per lesson — a real teacher doesn't dump a whole shelf on one week. These are in addition to `this_week_practice` (which targets the piece itself); `suggested_etudes` targets the underlying technique that the piece exposes.
+Cap at 2-3 etudes per lesson — a real teacher doesn't dump a whole shelf on one week. These are in addition to `this_week_practice` (which targets the piece itself); `suggested_etudes` targets the underlying technique that the piece exposes. Omit the field entirely if nothing fits.
 
 # Pitch spelling — important
 
