@@ -1411,6 +1411,137 @@ def create_app():
             raise HTTPException(status_code=404, detail="no evidence packet for this lesson")
         return Response(content=storage.read_bytes(key), media_type="text/markdown; charset=utf-8")
 
+    @app.get("/lessons/{session_id}/debug/teach-context")
+    def debug_teach_context(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
+        """Return the complete text context that gets sent to the teacher LLM.
+
+        Mirrors ``teach_lesson._build_user_contents`` but omits binary parts
+        (audio bytes, score PNGs, video frame JPEGs). Used by the technical
+        viewer to debug hallucinations: if the LLM cited a pitch that isn't
+        in the score, or made a wrong measure claim, this view shows the
+        exact prose the model was looking at.
+        """
+        try:
+            manifest = store.load_by_id(ctx, session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson not found") from exc
+
+        from masterclass.agent_tools.catalog import tool_catalog_text
+        from masterclass.engine.instruments import (
+            load_instrument_profile,
+            system_instruction_for_profile,
+        )
+        from masterclass.engine.prompt_evidence import build_evidence_digest
+        from masterclass.engine.prompt_inventory import build_score_note_inventory
+        from masterclass.engine.teach_lesson import (
+            _frame_keys,
+            _read_prior_context,
+            _read_score_map,
+            _score_image_keys,
+            TeachConfig,
+        )
+
+        profile = load_instrument_profile(manifest.instrument_profile)
+        system_instruction = system_instruction_for_profile(profile, tool_catalog=tool_catalog_text(profile))
+
+        score_map = _read_score_map(storage, store, manifest)
+        score_key = score_map.get("key") if score_map else None
+        first_measure = manifest.metadata.get("first_measure") if manifest.metadata else None
+        last_measure = manifest.metadata.get("last_measure") if manifest.metadata else None
+        try:
+            evidence_digest = build_evidence_digest(storage=storage, store=store, manifest=manifest, score_key=score_key)
+        except Exception as exc:
+            evidence_digest = f"(evidence digest unavailable: {exc})"
+        if score_key:
+            evidence_digest = (
+                f"Key: {score_key}. Use this key's spelling in all comments; copy note spellings from the inventory.\n\n"
+                + evidence_digest
+            )
+        try:
+            inventory = build_score_note_inventory(score_map, first_measure=first_measure, last_measure=last_measure) if score_map else ""
+        except Exception as exc:
+            inventory = f"(inventory unavailable: {exc})"
+        try:
+            prior_context = _read_prior_context(storage, manifest)
+        except Exception as exc:
+            prior_context = f"(prior context unavailable: {exc})"
+
+        # Audio key — surfaced as a label/placeholder only, never the bytes.
+        audio_key = manifest.artifacts.get("artifacts/audio_16k.wav") or manifest.artifacts.get("artifacts/audio.wav")
+        cfg = TeachConfig()
+        try:
+            score_image_keys = _score_image_keys(storage, store, manifest, score_map)
+        except Exception:
+            score_image_keys = []
+        try:
+            frame_keys_list = _frame_keys(storage, manifest, cfg.max_video_frames)
+        except Exception:
+            frame_keys_list = []
+
+        # Mirror the order of _build_user_contents exactly so what the viewer
+        # shows = what the model sees (modulo the binary blobs).
+        parts: list[dict[str, Any]] = []
+        parts.append({"kind": "system", "label": "System instruction", "text": system_instruction})
+        parts.append({"kind": "text", "label": "Evidence digest", "text": evidence_digest or "(empty)"})
+        parts.append({
+            "kind": "text",
+            "label": "Recording briefing",
+            "text": (
+                f"Repertoire: {manifest.repertoire or '(unknown)'}\n"
+                f"Movement: {manifest.movement or '(unknown)'}\n"
+                f"Instrument: {manifest.instrument or manifest.instrument_profile or '(unspecified)'}\n"
+                f"Measures: {first_measure}\u2013{last_measure}\n"
+                f"Student notes: {(manifest.notes or '(none)').strip()}\n"
+            ),
+        })
+        parts.append({"kind": "text", "label": "Prior takes of this piece", "text": prior_context or "(no prior lessons)"})
+        if audio_key:
+            parts.append({
+                "kind": "binary-omitted",
+                "label": "Audio (audio/wav)",
+                "text": f"[binary omitted] artifact_key={audio_key}",
+            })
+        if score_image_keys:
+            parts.append({
+                "kind": "binary-omitted",
+                "label": f"Score images ({min(len(score_image_keys), cfg.max_score_pages)} of {len(score_image_keys)})",
+                "text": "\n".join(
+                    f"[binary omitted] score image {i + 1}: {k}"
+                    for i, k in enumerate(score_image_keys[: cfg.max_score_pages])
+                ),
+            })
+        else:
+            parts.append({"kind": "binary-omitted", "label": "Score images (0)", "text": "(no score images available)"})
+        if frame_keys_list:
+            parts.append({
+                "kind": "binary-omitted",
+                "label": f"Video frames ({len(frame_keys_list)})",
+                "text": "\n".join(
+                    f"[binary omitted] video frame {i + 1}: {k}"
+                    for i, k in enumerate(frame_keys_list)
+                ),
+            })
+        else:
+            parts.append({"kind": "binary-omitted", "label": "Video frames (0)", "text": "(no frames available)"})
+        parts.append({"kind": "text", "label": "Score note inventory", "text": inventory or "(no score note inventory available)"})
+        parts.append({
+            "kind": "text",
+            "label": "Task prompt",
+            "text": (
+                "Listen to the recording. Examine the score. Examine the video frames above. "
+                "Use investigation tools to fact-check measurable claims. "
+                "Produce the final v2 comments_enriched.json as a single JSON code block."
+            ),
+        })
+
+        total_chars = sum(len(p["text"]) for p in parts)
+        return {
+            "session_id": session_id,
+            "model": os.environ.get("MASTERCLASS_TEACH_MODEL", "gemini-2.5-pro"),
+            "total_chars": total_chars,
+            "parts": parts,
+        }
+
     @app.get("/lessons/{session_id}/debug/raw-llm-response")
     def debug_raw_llm_response(session_id: str, ctx: TenantContext = Depends(_pro_ctx)) -> dict:
         _, key = _load_lesson_artifact(ctx, session_id, "llm/raw_teacher_response.json")

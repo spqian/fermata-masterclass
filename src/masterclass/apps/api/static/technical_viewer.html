@@ -275,13 +275,14 @@
         <!-- 5. Raw LLM I/O -->
         <div class="panel-card collapsed" id="panel-raw">
           <div class="panel-head" data-toggle="panel-raw">
-            <h2>Raw LLM input &amp; output</h2>
-            <span class="badge">evidence_packet.md · raw_teacher_response.json · tool-calls</span>
+            <h2>Full LLM context (input &amp; output)</h2>
+            <span class="badge">teach-context (text only) · raw_teacher_response.json · tool-calls</span>
             <span class="chev"></span>
           </div>
           <div class="panel-body">
-            <h3 style="margin:0 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">EVIDENCE PACKET</h3>
-            <div class="markdown" id="raw-evidence">loading…</div>
+            <h3 style="margin:0 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">FULL LLM CONTEXT (text parts only — audio / score images / video frames omitted)</h3>
+            <div id="teach-context-summary" class="placeholder">loading…</div>
+            <div id="teach-context-parts"></div>
             <h3 style="margin:14px 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">RAW LLM RESPONSE (JSON)</h3>
             <pre id="raw-response">loading…</pre>
             <h3 style="margin:14px 0 6px; font-size:12px; color:var(--ink-mute); letter-spacing:.08em;">TOOL CALLS</h3>
@@ -895,10 +896,32 @@
 
   async function loadRaw() {
     try {
-      const md = await api(`/lessons/${SESSION_ID}/debug/evidence-packet`);
-      document.getElementById("raw-evidence").textContent = md;
+      const ctx = await api(`/lessons/${SESSION_ID}/debug/teach-context`);
+      const summary = document.getElementById("teach-context-summary");
+      const host = document.getElementById("teach-context-parts");
+      summary.classList.remove("placeholder");
+      summary.innerHTML = `<div style="font-size:12px;color:var(--ink-mute);margin-bottom:8px;">model: <code>${escapeHtml(ctx.model)}</code> · ${(ctx.parts || []).length} parts · ${ctx.total_chars.toLocaleString()} chars total (binary blobs not counted)</div>`;
+      host.innerHTML = (ctx.parts || []).map((p, i) => {
+        const kindBadge = p.kind === "system"
+          ? `<span class="badge" style="background:rgba(201,169,106,0.18);color:var(--gold);">SYSTEM</span>`
+          : p.kind === "binary-omitted"
+            ? `<span class="badge" style="background:rgba(255,255,255,0.05);color:var(--ink-mute);">BINARY OMITTED</span>`
+            : `<span class="badge">TEXT</span>`;
+        const len = (p.text || "").length;
+        const collapsed = i > 0 && len > 4000;
+        return `
+          <details ${collapsed ? "" : "open"} style="margin:6px 0;border-left:2px solid rgba(201,169,106,0.18);padding:6px 10px;background:rgba(0,0,0,0.18);border-radius:3px;">
+            <summary style="cursor:pointer;font-size:12px;color:var(--ink-soft);">
+              <strong>${i + 1}. ${escapeHtml(p.label || "")}</strong> ${kindBadge}
+              <span style="color:var(--ink-mute);font-family:'JetBrains Mono',monospace;">${len.toLocaleString()} chars</span>
+            </summary>
+            <pre style="white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:11px;line-height:1.45;max-height:600px;overflow:auto;">${escapeHtml(p.text || "")}</pre>
+          </details>
+        `;
+      }).join("");
     } catch (e) {
-      document.getElementById("raw-evidence").textContent = `(evidence packet unavailable: ${e.message})`;
+      document.getElementById("teach-context-summary").textContent = `(teach context unavailable: ${e.message})`;
+      document.getElementById("teach-context-parts").innerHTML = "";
     }
     try {
       const j = await api(`/lessons/${SESSION_ID}/debug/raw-llm-response`);

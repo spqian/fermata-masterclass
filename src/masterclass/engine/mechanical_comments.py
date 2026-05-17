@@ -107,6 +107,16 @@ def generate_mechanical_comments(
         _add_overview(add, manifest, rhythm_summary, intonation, voicing, bar_starts)
 
     comments.sort(key=lambda c: (float(c["start_sec"]), c["id"]))
+    # Defense in depth: enforce the played-range sandbox even if an upstream
+    # source (rhythm/intonation/voicing) leaked a row whose measure is
+    # outside the lesson envelope. Rows without an explicit measure (e.g.
+    # overview/global) pass through unchanged.
+    from masterclass.core.played_range import derive_played_range
+    played_range = derive_played_range(manifest, None)
+    comments = [
+        c for c in comments
+        if c.get("measure") is None or played_range.contains(c.get("measure"))
+    ]
     counts = _counts(comments)
     summary = {
         "session_id": manifest.session.session_id,
