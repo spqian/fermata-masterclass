@@ -16,9 +16,9 @@ This module replaces that with two purpose-built audio-to-MIDI models:
       General-purpose polyphonic transcriber.
 
 After transcription, we match each detected note against the reference
-MIDI using greedy nearest-pitch-and-time matching with a sliding EMA
-lag estimator. Matched notes inherit the score's staff_index, voice,
-measure -- everything the teacher tools need for grounded comments.
+MIDI using banded Needleman-Wunsch sequence alignment with a tempo prior.
+Matched notes inherit the score's staff_index, voice, measure --
+everything the teacher tools need for grounded comments.
 
 Both models load heavy ML deps (TF for basic-pitch, PyTorch for PTI),
 so we lazy-import them inside the functions.
@@ -388,12 +388,19 @@ def match_to_score(
     perf_notes: list[dict[str, Any]],
     score_notes: list[dict[str, Any]],
     *,
+    tempo_ratio_init: float | None = None,
+    time_prior_weight: float = 0.5,
+    band_sec: float = 3.0,
+    gap_perf: float = -0.5,
+    gap_score: float = -2.0,
+    match_reward: float = 5.0,
+    near_reward: float = 1.0,
     time_window_sec: float = 4.0,
     lag_smoothing: float = 0.85,
     backward_tolerance_sec: float = 0.5,
     backward_penalty_sec: float = 6.0,
 ) -> list[dict[str, Any]]:
-    """Greedy left-to-right matcher with EMA-tracked perf-vs-score lag.
+    """Globally align detected notes to score notes with banded Needleman-Wunsch.
 
     Returns a new list (same length as ``perf_notes``) with each note
     enriched by the matched score note's ``staff_index``, ``track_name``,
@@ -402,72 +409,214 @@ def match_to_score(
     but get ``matched=False`` and ``staff_index=None`` so the overlay can
     render them in a neutral colour.
 
-    Monotonicity: when the score has repeated material (the Bach opening's
-    rolling chord shares pitches with later passages, etc.), pure
-    nearest-time matching can alias an early performed note to a *later*
-    score note that's closer to the running lag estimate. We add a soft
-    penalty for candidates whose ``score_time_sec`` precedes the last
-    matched score time by more than ``backward_tolerance_sec`` (chord
-    voices can legitimately arrive slightly out of strict order, so we
-    don't ban backwards matches outright).
+    The old greedy matcher could alias repeated pitch material across the
+    piece. This implementation instead uses a semi-global Needleman-Wunsch
+    dynamic program: pitch-compatible diagonal matches compete with cheap
+    performed-note gaps (extra detections/harmonics) and more expensive
+    score-note gaps (missed notes). A tempo prior scores each candidate
+    against ``tempo_ratio * score_time_sec + start_offset``, and a score-time
+    band around that prior prevents repeated material far away in the piece
+    from being considered. We run the alignment twice: first with a duration
+    ratio estimate, then with a linear-regression tempo/intercept estimated
+    from first-pass matches.
+
+    ``timing_offset_ms`` is measured against the final tempo-mapped expected
+    performed time, not raw score time. Legacy kwargs
+    (``time_window_sec``, ``lag_smoothing``, ``backward_tolerance_sec``,
+    ``backward_penalty_sec``) remain accepted for caller compatibility but are
+    intentionally ignored by the NW matcher.
     """
-    by_pitch: dict[int, list[int]] = {}
-    for idx, sn in enumerate(score_notes):
-        by_pitch.setdefault(sn["midi_pitch"], []).append(idx)
-    score_claimed = [False] * len(score_notes)
-    lag_estimate: float | None = None
-    last_matched_score_time: float = -1e9
-    out: list[dict[str, Any]] = []
-    for pn in perf_notes:
-        enriched = dict(pn)
+    del time_window_sec, lag_smoothing, backward_tolerance_sec, backward_penalty_sec
+
+    def _perf_time(note: dict[str, Any]) -> float:
+        return float(note.get("performed_time_sec", note.get("perf_time", 0.0)) or 0.0)
+
+    def _unmatched(note: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(note)
+        enriched["matched"] = False
+        enriched["staff_index"] = None
+        return enriched
+
+    if not perf_notes:
+        return []
+    if not score_notes:
+        return [_unmatched(pn) for pn in perf_notes]
+
+    sorted_perf: list[tuple[int, dict[str, Any], int, float]] = []
+    for orig_idx, pn in sorted(enumerate(perf_notes), key=lambda item: _perf_time(item[1])):
         pitches = pn.get("pitches_midi") or []
-        if not pitches:
-            enriched["matched"] = False
-            enriched["staff_index"] = None
-            out.append(enriched)
-            continue
-        pitch = int(pitches[0])
-        perf_time = float(pn.get("performed_time_sec", pn.get("perf_time", 0.0)))
-        best_idx = None
-        best_cost = float("inf")
-        for cand_idx in by_pitch.get(pitch, []):
-            if score_claimed[cand_idx]:
-                continue
-            sn = score_notes[cand_idx]
-            expected = sn["score_time_sec"] + (lag_estimate or 0.0)
-            cost = abs(perf_time - expected)
-            if cost > time_window_sec:
-                continue
-            # Soft monotonicity: discourage jumping backwards in the score.
-            backward = last_matched_score_time - sn["score_time_sec"]
-            if backward > backward_tolerance_sec:
-                cost += backward_penalty_sec
-            if cost < best_cost:
-                best_cost = cost
-                best_idx = cand_idx
-        if best_idx is None:
-            enriched["matched"] = False
-            enriched["staff_index"] = None
-            out.append(enriched)
-            continue
-        score_claimed[best_idx] = True
-        m = score_notes[best_idx]
+        if pitches:
+            sorted_perf.append((orig_idx, pn, int(pitches[0]), _perf_time(pn)))
+
+    if not sorted_perf:
+        return [_unmatched(pn) for pn in perf_notes]
+
+    sorted_score = sorted(
+        enumerate(score_notes),
+        key=lambda item: (float(item[1].get("score_time_sec", 0.0) or 0.0), int(item[1].get("midi_pitch", 0) or 0)),
+    )
+
+    score_times = [float(sn.get("score_time_sec", 0.0) or 0.0) for _, sn in sorted_score]
+    score_pitches = [int(sn.get("midi_pitch", 0) or 0) for _, sn in sorted_score]
+    perf_times = [pt for _, _, _, pt in sorted_perf]
+    perf_pitches = [pitch for _, _, pitch, _ in sorted_perf]
+
+    last_score_time = max(score_times) if score_times else 0.0
+    last_perf_time = max(perf_times) if perf_times else 0.0
+    tempo_ratio = float(tempo_ratio_init) if tempo_ratio_init and tempo_ratio_init > 0 else (
+        last_perf_time / last_score_time if last_score_time > 0.1 else 1.0
+    )
+    if tempo_ratio <= 0:
+        tempo_ratio = 1.0
+    start_offset = 0.0
+
+    def _align_once(ratio: float, offset: float) -> list[tuple[int, int]]:
+        n = len(perf_pitches)
+        m = len(score_pitches)
+        neg_inf = -1.0e15
+        dp = [[neg_inf] * (m + 1) for _ in range(n + 1)]
+        ptr: list[list[str | None]] = [[None] * (m + 1) for _ in range(n + 1)]
+        in_band = [[False] * (m + 1) for _ in range(n + 1)]
+
+        for i in range(n + 1):
+            if i == 0:
+                lo, hi = 0, m
+            else:
+                center_score_time = (perf_times[i - 1] - offset) / ratio if ratio > 0 else perf_times[i - 1]
+                lo = 1
+                while lo <= m and score_times[lo - 1] < center_score_time - band_sec:
+                    lo += 1
+                hi = lo - 1
+                while hi < m and score_times[hi] <= center_score_time + band_sec:
+                    hi += 1
+                lo = max(1, min(lo, m))
+                hi = max(lo, min(hi, m))
+            in_band[i][0] = True
+            for j in range(lo, hi + 1):
+                in_band[i][j] = True
+
+        dp[0][0] = 0.0
+        for i in range(1, n + 1):
+            dp[i][0] = dp[i - 1][0] + gap_perf
+            ptr[i][0] = "up"
+        for j in range(1, m + 1):
+            dp[0][j] = dp[0][j - 1] + gap_score
+            ptr[0][j] = "left"
+
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                if not in_band[i][j]:
+                    continue
+                best = neg_inf
+                best_ptr: str | None = None
+
+                if in_band[i - 1][j] and dp[i - 1][j] > neg_inf / 2:
+                    score = dp[i - 1][j] + gap_perf
+                    if score > best:
+                        best = score
+                        best_ptr = "up"
+
+                if in_band[i][j - 1] and dp[i][j - 1] > neg_inf / 2:
+                    score = dp[i][j - 1] + gap_score
+                    if score > best:
+                        best = score
+                        best_ptr = "left"
+
+                if in_band[i - 1][j - 1] and dp[i - 1][j - 1] > neg_inf / 2:
+                    pitch_delta = abs(perf_pitches[i - 1] - score_pitches[j - 1])
+                    if pitch_delta == 0:
+                        pitch_score = match_reward
+                    elif pitch_delta == 1:
+                        pitch_score = near_reward
+                    else:
+                        pitch_score = -1000.0
+                    expected_perf_time = ratio * score_times[j - 1] + offset
+                    time_penalty = time_prior_weight * min(abs(perf_times[i - 1] - expected_perf_time), 20.0)
+                    score = dp[i - 1][j - 1] + pitch_score - time_penalty
+                    if score > best:
+                        best = score
+                        best_ptr = "diag"
+
+                dp[i][j] = best
+                ptr[i][j] = best_ptr
+
+        min_final_j = 0
+        final_j = max(range(min_final_j, m + 1), key=lambda j: dp[n][j])
+        matches: list[tuple[int, int]] = []
+        i, j = n, final_j
+        while i > 0 or j > 0:
+            step = ptr[i][j] if i >= 0 and j >= 0 else None
+            if step == "diag":
+                pitch_delta = abs(perf_pitches[i - 1] - score_pitches[j - 1])
+                if pitch_delta <= 1:
+                    matches.append((i - 1, j - 1))
+                i -= 1
+                j -= 1
+            elif step == "up":
+                i -= 1
+            elif step == "left":
+                j -= 1
+            else:
+                break
+        matches.reverse()
+        return matches
+
+    matches = _align_once(tempo_ratio, start_offset)
+    if len(matches) >= 2:
+        xs = [score_times[j] for _, j in matches]
+        ys = [perf_times[i] for i, _ in matches]
+        mean_x = sum(xs) / len(xs)
+        mean_y = sum(ys) / len(ys)
+        denom = sum((x - mean_x) ** 2 for x in xs)
+        if denom > 1.0e-9:
+            refined_ratio = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
+            refined_offset = mean_y - refined_ratio * mean_x
+            if refined_ratio > 0:
+                tempo_ratio = refined_ratio
+                start_offset = refined_offset
+                matches = _align_once(tempo_ratio, start_offset)
+
+    match_by_orig_idx: dict[int, dict[str, Any]] = {}
+
+    def _matched_note(pn: dict[str, Any], sn: dict[str, Any], perf_time: float) -> dict[str, Any]:
+        enriched = dict(pn)
         enriched["matched"] = True
-        enriched["staff_index"] = m["staff_index"]
-        enriched["track_name"] = m["track_name"]
-        enriched["measure"] = m["measure"]
-        enriched["score_time_sec"] = m["score_time_sec"]
-        enriched["score_midi_pitch"] = m["midi_pitch"]
-        enriched["timing_offset_ms"] = round((perf_time - m["score_time_sec"]) * 1000.0, 1)
-        new_lag = perf_time - m["score_time_sec"]
-        lag_estimate = new_lag if lag_estimate is None else (lag_smoothing * lag_estimate + (1 - lag_smoothing) * new_lag)
-        # Only ratchet forward; backwards-tolerated matches don't push the
-        # progress marker so we can still legitimately match a delayed
-        # chord voice to its earlier-in-score position.
-        if m["score_time_sec"] > last_matched_score_time:
-            last_matched_score_time = m["score_time_sec"]
-        out.append(enriched)
-    return out
+        enriched["staff_index"] = sn.get("staff_index")
+        enriched["track_name"] = sn.get("track_name")
+        enriched["measure"] = sn.get("measure")
+        enriched["score_time_sec"] = sn.get("score_time_sec")
+        enriched["score_midi_pitch"] = sn.get("midi_pitch")
+        expected_perf_time = tempo_ratio * float(sn.get("score_time_sec", 0.0) or 0.0) + start_offset
+        enriched["timing_offset_ms"] = round((perf_time - expected_perf_time) * 1000.0, 1)
+        return enriched
+
+    for perf_i, score_j in matches:
+        orig_idx, pn, _, perf_time = sorted_perf[perf_i]
+        _, sn = sorted_score[score_j]
+        match_by_orig_idx[orig_idx] = _matched_note(pn, sn, perf_time)
+
+    # Basic-pitch often emits several same-pitch fragments around one notated
+    # note. NW correctly finds the score path, then this bounded fill marks
+    # near-tempo duplicate fragments as score-grounded without letting distant
+    # repeated material alias across the piece.
+    duplicate_fill_tolerance_sec = 2.0
+    for orig_idx, pn, pitch, perf_time in sorted_perf:
+        if orig_idx in match_by_orig_idx:
+            continue
+        best_sn: dict[str, Any] | None = None
+        best_err = float("inf")
+        for _, sn in sorted_score:
+            if abs(pitch - int(sn.get("midi_pitch", 0) or 0)) > 1:
+                continue
+            expected_perf_time = tempo_ratio * float(sn.get("score_time_sec", 0.0) or 0.0) + start_offset
+            err = abs(perf_time - expected_perf_time)
+            if err < best_err:
+                best_err = err
+                best_sn = sn
+        if best_sn is not None and best_err <= duplicate_fill_tolerance_sec:
+            match_by_orig_idx[orig_idx] = _matched_note(pn, best_sn, perf_time)
+
+    return [match_by_orig_idx.get(i, _unmatched(pn)) for i, pn in enumerate(perf_notes)]
 
 
 # ---------------------------------------------------------------------------

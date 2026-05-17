@@ -27,6 +27,7 @@ scripts/*
 !scripts/rerun_teacher.py
 !scripts/rerun_hmm_align.py
 !scripts/rebuild_score_map.py
+!scripts/verify_matcher.py
 !scripts/README.md
 
 # Generated / scratch
