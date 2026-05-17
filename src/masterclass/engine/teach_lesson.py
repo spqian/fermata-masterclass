@@ -419,11 +419,25 @@ def _read_prior_context(storage: ObjectStorage, manifest: SessionManifest) -> st
 
 
 def _score_image_keys(storage: ObjectStorage, store: SessionStore, manifest: SessionManifest, score_map: dict[str, Any]) -> list[str]:
+    from masterclass.core.played_range import derive_played_range
+    played_range = derive_played_range(manifest, None)
     keys: list[str] = []
     seen: set[str] = set()
     systems = score_map.get("systems") or []
     systems = sorted((s for s in systems if isinstance(s, dict)), key=lambda s: (int(s.get("page") or 0), int(s.get("system_on_page") or 0)))
     for system in systems:
+        # Defense-in-depth: even though _layout_systems is supposed to
+        # pre-filter to the played range, double-check here so an upstream
+        # bug can't sneak an unplayed-page image into the prompt.
+        sys_first = system.get("first_measure")
+        sys_last = system.get("last_measure")
+        try:
+            if sys_first is not None and sys_last is not None:
+                lo, hi = int(sys_first), int(sys_last)
+                if hi < played_range.first_measure or lo > played_range.last_measure:
+                    continue
+        except (TypeError, ValueError):
+            pass
         rel = system.get("image")
         key = manifest.artifacts.get(str(rel)) if rel else None
         if not key and rel:

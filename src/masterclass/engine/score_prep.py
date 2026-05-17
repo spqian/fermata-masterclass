@@ -1168,6 +1168,7 @@ def select_score_pages_for_lesson(
 
     if first_measure and last_measure:
         narrowed: list[int] = []
+        any_page_meta = False
         for entry in pages_meta:
             if not isinstance(entry, dict):
                 continue
@@ -1178,10 +1179,17 @@ def select_score_pages_for_lesson(
             page_first = entry.get("first_measure")
             page_last = entry.get("last_measure")
             if isinstance(page_first, int) and isinstance(page_last, int):
+                any_page_meta = True
                 if page_first <= last_measure and page_last >= first_measure:
                     narrowed.append(page)
-        if narrowed:
+        if any_page_meta:
+            # We had per-page measure metadata; trust it strictly. If NO
+            # pages overlap the played range, ship nothing -- shipping
+            # arbitrary pages would silently waste tokens and bias the
+            # teacher toward unplayed material.
             music_page_numbers = sorted(set(narrowed))
+        # else: fall through to the un-narrowed all-music-pages list (best
+        # effort when prep doc lacks per-page measure ranges).
 
     music_page_numbers = sorted(set(music_page_numbers))[:max_pages]
 
