@@ -251,196 +251,357 @@ def analysis_markdown(analysis: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _audio_truth_pitch_rows(storage: ObjectStorage, manifest: SessionManifest, limit: int | None = 40) -> list[dict[str, Any]]:
-    """Return per-note rows derived from the lesson's aligned-notes timeline
-    suitable for embedding in the evidence packet markdown.
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
-    Each row carries the score-expected pitch, the detected pitch, the
-    cents-from-score deviation, the measure/beat, and the match status.
-    These are the same notes the technical viewer shows; using them here
-    is what closes the "teacher reasons over CREPE while user reasons over
-    audio-truth" inconsistency that drove the 'is the C sharp' hallucination.
-    """
-    from masterclass.engine.aligned_notes import load_aligned_notes
-    notes = load_aligned_notes(storage, manifest)
-    rows: list[dict[str, Any]] = []
-    NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    for n in notes:
-        if not n.pitches_midi:
+
+_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def _midi_name(midi: int) -> str:
+    return f"{_PITCH_NAMES[midi % 12]}{midi // 12 - 1}"
+
+
+def _build_performance_timeline(
+    matched_notes: list[Any],
+    score_notes_in_range: list[dict[str, Any]],
+    omr_empty_measures: set[int],
+    played_range: Any,
+) -> list[dict[str, Any]]:
+    """One row per played measure: perf-time window + match counts + flags."""
+    # Score-side density (notes-per-measure) for the played range only.
+    score_density: dict[int, int] = {}
+    for sn in score_notes_in_range:
+        m = _coerce_int(sn.get("measure"))
+        if m is None:
             continue
-        detected = int(n.pitches_midi[0])
-        score_pitch = n.score_midi_pitch
-        cents_off_score = None
-        if score_pitch is not None:
-            # If detected and matched score pitch differ by a semitone we report
-            # the literal semitone offset times 100c; the teacher needs to see
-            # WRONG-NOTE mismatches as clearly as in-tune-but-imprecise.
-            cents_off_score = round((detected - int(score_pitch)) * 100.0, 1)
-        det_name = f"{NAMES[detected % 12]}{detected // 12 - 1}"
-        duration = n.dwell_sec if n.dwell_sec else (n.expected_perf_duration or 0.0)
+        score_density[m] = score_density.get(m, 0) + 1
+
+    # Perf-side: per-measure first/last performed_time_sec + matched count.
+    perf_window: dict[int, dict[str, float]] = {}
+    for n in matched_notes:
+        if not n.matched:
+            continue
+        m = _coerce_int(n.measure)
+        if m is None or not played_range.contains(m):
+            continue
+        t = float(n.performed_time_sec or 0.0)
+        win = perf_window.setdefault(m, {"first": t, "last": t, "count": 0})
+        if t < win["first"]:
+            win["first"] = t
+        if t > win["last"]:
+            win["last"] = t
+        win["count"] += 1
+
+    rows: list[dict[str, Any]] = []
+    for m in played_range.measures():
+        win = perf_window.get(m)
+        sd = score_density.get(m, 0)
+        flags: list[str] = []
+        if m in omr_empty_measures:
+            flags.append("OMR-gap (pitches unknown)")
+        if win is None:
+            rows.append({
+                "measure": m,
+                "starts": None,
+                "ends": None,
+                "matched": 0,
+                "score_notes": sd,
+                "flags": flags + (["no matches in this measure"] if not flags else []),
+            })
+            continue
+        ratio = (win["count"] / sd) if sd else None
+        if ratio is not None and ratio >= 1.6:
+            flags.append(f"high extra-detection density ({ratio:.1f}× score)")
         rows.append({
-            "start_sec": round(float(n.performed_time_sec), 3),
-            "duration_sec": round(float(duration), 3),
-            "detected_note": det_name,
-            "detected_midi": detected,
-            "score_note": f"{NAMES[int(score_pitch) % 12]}{int(score_pitch) // 12 - 1}" if score_pitch is not None else None,
-            "cents_off_score": cents_off_score,
-            "measure": n.measure,
-            "staff": n.staff_index,
-            "matched": bool(n.matched),
-            "confidence": n.confidence,
-            "timing_offset_ms": n.timing_offset_ms,
+            "measure": m,
+            "starts": round(win["first"], 2),
+            "ends": round(win["last"], 2),
+            "matched": int(win["count"]),
+            "score_notes": sd,
+            "flags": flags,
         })
-    rows.sort(key=lambda r: r["start_sec"])
-    if limit is not None:
-        return rows[:limit]
     return rows
 
 
+def _format_perf_timeline_table(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "| Measure | Starts at | Ends at | Notes matched | Score notes | Flags |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        starts = f"{r['starts']:.2f}s" if r["starts"] is not None else "—"
+        ends = f"{r['ends']:.2f}s" if r["ends"] is not None else "—"
+        score_notes_cell = "(OMR-empty)" if r["score_notes"] == 0 and "OMR-gap (pitches unknown)" in r["flags"] else str(r["score_notes"])
+        flags = ", ".join(r["flags"]) or "—"
+        lines.append(f"| m.{r['measure']} | {starts} | {ends} | {r['matched']} | {score_notes_cell} | {flags} |")
+    return lines
+
+
+def _collect_wrong_note_candidates(matched_notes: list[Any], played_range: Any, limit: int = 30) -> list[dict[str, Any]]:
+    """Return notes the matcher accepted as exactly ±1 semitone off the score.
+
+    These are the only rows worth flagging up-front as wrong-note candidates.
+    Real intonation work needs ``inspect_intonation`` — see the anti-pattern
+    note in the rendered packet.
+    """
+    rows: list[dict[str, Any]] = []
+    for n in matched_notes:
+        if not n.matched or n.score_midi_pitch is None or not n.pitches_midi:
+            continue
+        m = _coerce_int(n.measure)
+        if m is None or not played_range.contains(m):
+            continue
+        detected = int(n.pitches_midi[0])
+        score_pitch = int(n.score_midi_pitch)
+        delta = detected - score_pitch
+        if delta == 0 or abs(delta) > 1:
+            continue
+        rows.append({
+            "perf_time": round(float(n.performed_time_sec or 0.0), 2),
+            "measure": m,
+            "detected": _midi_name(detected),
+            "score": _midi_name(score_pitch),
+            "delta_cents": delta * 100,
+        })
+    rows.sort(key=lambda r: r["perf_time"])
+    return rows[:limit]
+
+
+def _collect_suspicious_dense_regions(
+    analysis: dict[str, Any],
+    perf_envelope: tuple[float, float] | None,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    """Onset-dense windows, deduplicated and scoped to the perf envelope."""
+    rows = (analysis.get("ranked_regions", {}) or {}).get("onset_dense_regions", []) or []
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for r in rows:
+        start = r.get("start_sec")
+        end = r.get("end_sec")
+        score = r.get("score")
+        if start is None or end is None or score is None:
+            continue
+        if perf_envelope is not None:
+            lo, hi = perf_envelope
+            if end < lo or start > hi:
+                continue
+        key = (int(start), int(end))  # collapse near-duplicates from sliding bins
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"start": float(start), "end": float(end), "onset_count": int(score)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _per_measure_score_pitches(
+    score_notes: list[dict[str, Any]],
+    played_range: Any,
+    omr_empty_measures: set[int],
+) -> dict[int, list[str]]:
+    """Per-measure pitch outline, scoped to the played range. Wildcards excluded."""
+    from masterclass.engine.audio_truth import _WILDCARD_PITCH
+    by_measure: dict[int, list[tuple[float, str]]] = {}
+    for n in score_notes:
+        m = _coerce_int(n.get("measure"))
+        if m is None or not played_range.contains(m):
+            continue
+        if int(n.get("midi_pitch", 0)) == _WILDCARD_PITCH or n.get("is_wildcard"):
+            continue
+        by_measure.setdefault(m, []).append((float(n["score_time_sec"]), _midi_name(int(n["midi_pitch"]))))
+    out: dict[int, list[str]] = {}
+    for m in played_range.measures():
+        if m in omr_empty_measures:
+            continue
+        rows = sorted(by_measure.get(m, []))
+        # De-dup consecutive identical names (chord groups can repeat the same pitch across voices).
+        seen: list[str] = []
+        for _t, nm in rows:
+            if not seen or seen[-1] != nm:
+                seen.append(nm)
+        if seen:
+            out[m] = seen
+    return out
+
+
+_TOOL_CATALOG_AND_ANTIPATTERNS = """## How to investigate further (tools + anti-patterns)
+
+The packet above is a low-resolution MAP — it deliberately does NOT include per-note pitch/timing/loudness measurements because those are unreliable as static snapshots. To investigate any specific moment, USE THE TOOLS:
+
+| Question | Tool |
+|---|---|
+| What does this moment sound like? | `listen(start_sec, end_sec)` |
+| What does this moment look like (motion)? | `watch(start_sec, end_sec, "your question")` |
+| What is the true pitch deviation at this note? | `inspect_intonation(time_sec, expected_midi_pitch)` |
+| What notes are in m.X (and their measured timing)? | `inspect_bar(measure)` |
+| One specific note's full record | `inspect_note(time_sec, midi_pitch)` |
+| Voicing balance in a chord | `inspect_chord(time_sec)` |
+| Local tempo over a window | `measure_tempo(start_sec, end_sec)` |
+| Per-note peak loudness (voicing/dynamics) | `measure_dynamics(start_sec, end_sec)` |
+| Trill rate / evenness | `measure_trill(start_sec, end_sec)` |
+| One extra video still | `get_frames(start_sec, end_sec, fps)` |
+
+**Critical anti-patterns** — these snapshot fields are present elsewhere in tool outputs but should NEVER ground a claim:
+
+- **`cents_off_score` per note is meaningless.** Basic-pitch outputs integer MIDI, so the field is always 0 (perfect) or ±100 (wrong note). It cannot detect a 30-cent sharp violin note. For REAL intonation, ALWAYS call `inspect_intonation(time, expected_pitch)` — it reads the constant-Q transform and gives true cents-off-pitch.
+- **`timing_offset_ms` per note is unreliable.** It's measured against a single global linear tempo model. Any rubato in the music makes the per-note value noise. For real tempo information, call `measure_tempo(start, end)` over the window of interest.
+- **Do not cite a pitch not in the "Score pitches per played measure" outline above.** That outline IS the score for the played range. Wrong-note candidates are listed separately and need verification.
+"""
+
+
 def build_evidence_packet(*, store: SessionStore, storage: ObjectStorage, manifest: SessionManifest) -> SessionManifest:
+    from masterclass.core.played_range import derive_played_range
+    from masterclass.engine.aligned_notes import load_aligned_notes
+    from masterclass.engine.audio_truth import _WILDCARD_PITCH, _load_score_notes_from_musicxml
+
     analysis_key = ArtifactCatalog(manifest).analysis_json()
     if not analysis_key:
         raise ValueError("analysis artifact missing; run analyze first")
     analysis = storage.read_json(analysis_key)
-    lines = [
-        f"# Evidence Packet - {manifest.repertoire or 'Untitled'}",
-        "",
-        "This packet is the factual basis for the teacher agent. Measurable claims should trace to these rows or a tool call.",
-        "",
-        "## Session",
-        f"- Session id: `{manifest.session.session_id}`",
-        f"- User/Tenant: `{manifest.user_id if hasattr(manifest, 'user_id') else manifest.session.user_id}` / `{manifest.session.tenant_id}`",
-        f"- Repertoire: `{manifest.repertoire}`",
-        f"- Movement: `{manifest.movement}`",
-        f"- Instrument: `{manifest.instrument}`",
-        "",
-        storage.read_bytes(manifest.artifacts["analysis/analysis.md"]).decode("utf-8"),
-    ]
-    # Per-note audio-truth rows. We deliberately do NOT include the older
-    # CREPE pitch_events.json here -- it produced confidence-laden monophonic
-    # blobs that the teacher misread as intonation evidence. The audio-truth
-    # rows below are score-anchored: each row tells the teacher exactly what
-    # note was played, what the score expected, and the deviation.
-    at_rows = _audio_truth_pitch_rows(storage, manifest, limit=80)
-    # Scope rows to the player's played range: rows whose ``measure`` falls
-    # outside the [first..last] window are matcher noise (snapped to a
-    # nearby score event that the player never actually approached) and
-    # they routinely mislead the teacher agent into commenting on measures
-    # the user never played.
-    from masterclass.core.played_range import derive_played_range
+
     played_range = derive_played_range(manifest, None)
-    if at_rows:
-        in_range_rows: list[dict[str, Any]] = []
-        out_of_range = 0
-        for r in at_rows:
-            m = r.get("measure")
-            if m is None or played_range.contains(m):
-                in_range_rows.append(r)
-            else:
-                out_of_range += 1
-        at_rows = in_range_rows
-        header = (
-            f"## Audio-truth notes (first {len(at_rows)}, score-matched, "
-            f"played range: m.{played_range.first_measure}-{played_range.last_measure})"
-        )
-        played_note = (
-            f"All rows below are scoped to the played range "
-            f"m.{played_range.first_measure}-{played_range.last_measure} "
-            f"(source: {played_range.source}). "
-        )
-        if out_of_range:
-            played_note += (
-                f"Dropped {out_of_range} row(s) whose detected measure fell outside this range. "
-            )
-        lines.extend([
-            "",
-            header,
-            "",
-            played_note
-            + "Each row is one detected note matched against the reference score. "
-            + "`cents_off_score` is the literal MIDI-semitone difference between the detected pitch and the score pitch "
-            + "(so +100 = a full semitone sharp, often a wrong-note mistake; +35 = a sharp intonation reading; ±10 ≈ in tune). "
-            + "`timing_offset_ms` is detected-onset minus score-time (positive = late).",
-            "",
-        ])
-        for r in at_rows:
-            score_part = f" vs score {r['score_note']}" if r['score_note'] else " (unmatched)"
-            cents_part = ""
-            if r["cents_off_score"] is not None:
-                cents_part = f" cents_off_score={r['cents_off_score']:+.1f}c"
-            timing_part = ""
-            if r["timing_offset_ms"] is not None:
-                timing_part = f" timing={r['timing_offset_ms']:+.0f}ms"
-            measure_part = f" m.{r['measure']}" if r['measure'] is not None else ""
-            staff_part = f" staff={r['staff']}" if r['staff'] is not None else ""
-            lines.append(
-                f"- `{r['start_sec']:.3f}s` {r['detected_note']}{score_part}{cents_part}{timing_part}{measure_part}{staff_part} dur={r['duration_sec']:.2f}s conf={r['confidence']}"
-            )
-    # Per-measure score outline. Without this the teacher hallucinates
-    # pitches that aren't in the piece (e.g. "the G# in measure 7" when
-    # measure 7 has only G-natural). Read MusicXML directly because
-    # evidence_packet runs before score_map in the pipeline.
+
+    # ---- Sandbox-scope everything to the played range ONCE, here. ----
+    matched_notes = load_aligned_notes(storage, manifest)
+    matched_in_range = played_range.filter_by_measure(matched_notes, key="measure")
+    # Also keep unmatched perf notes that have no measure (they're useful as
+    # "dense burst" context but not for per-measure rows).
+    matched_with_measure = [n for n in matched_notes if n.matched]
+
+    sm_notes: list[dict[str, Any]] = []
     try:
-        from masterclass.engine.audio_truth import _load_score_notes_from_musicxml
         xml_key = None
-        for k in ("masterclass/reference/musicxml.musicxml", "masterclass/reference/musicxml.mxl", "masterclass/reference/musicxml"):
+        for k in (
+            "masterclass/reference/musicxml.musicxml",
+            "masterclass/reference/musicxml.mxl",
+            "masterclass/reference/musicxml",
+        ):
             if k in manifest.artifacts and storage.exists(manifest.artifacts[k]):
                 xml_key = manifest.artifacts[k]
                 break
-        sm_notes = _load_score_notes_from_musicxml(storage.read_bytes(xml_key)) if xml_key else []
+        if xml_key:
+            sm_notes = _load_score_notes_from_musicxml(storage.read_bytes(xml_key))
     except Exception:
         sm_notes = []
-    if sm_notes:
-        import pretty_midi as _pm
-        from masterclass.engine.audio_truth import _WILDCARD_PITCH
-        by_measure: dict[int, list[tuple[float, str]]] = {}
-        omr_empty_measures: set[int] = set()
-        for n in sm_notes:
-            m = n.get("measure")
-            if not m:
-                continue
-            if int(n.get("midi_pitch", 0)) == _WILDCARD_PITCH or n.get("is_wildcard"):
-                omr_empty_measures.add(int(m))
-                continue
-            name = _pm.note_number_to_name(int(n["midi_pitch"]))
-            by_measure.setdefault(int(m), []).append((float(n["score_time_sec"]), name))
-        if by_measure:
-            lines.extend([
-                "",
-                "## Score pitches per measure (authoritative)",
-                "",
-                "This list IS the score. If a measure does NOT contain a pitch you want to discuss, that pitch is NOT in the score — do not claim it is. Cross-check every named pitch (especially accidentals like G#, C#, F#) against this list before writing a comment. Pitches are listed in score-time order.",
-                "",
-            ])
-            for m in sorted(by_measure):
-                rows = sorted(by_measure[m])
-                # de-dup consecutive identical names (chord groups can repeat)
-                seen: list[str] = []
-                for _t, nm in rows:
-                    if not seen or seen[-1] != nm:
-                        seen.append(nm)
-                cells = seen[:32]
-                more = f" (+{len(seen) - 32} more)" if len(seen) > 32 else ""
+    score_notes_in_range = played_range.filter_by_measure(sm_notes, key="measure")
+
+    # OMR-empty measures inside the played range only.
+    omr_empty_measures: set[int] = set()
+    for n in score_notes_in_range:
+        m = _coerce_int(n.get("measure"))
+        if m is None:
+            continue
+        if int(n.get("midi_pitch", 0)) == _WILDCARD_PITCH or n.get("is_wildcard"):
+            omr_empty_measures.add(m)
+
+    # Perf-time envelope of the played range (for scoping ranked-regions).
+    perf_envelope: tuple[float, float] | None = None
+    if matched_in_range:
+        times = [float(n.performed_time_sec or 0.0) for n in matched_in_range if n.matched]
+        if times:
+            perf_envelope = (min(times), max(times))
+
+    timeline_rows = _build_performance_timeline(matched_with_measure, score_notes_in_range, omr_empty_measures, played_range)
+    wrong_note_candidates = _collect_wrong_note_candidates(matched_with_measure, played_range)
+    dense_regions = _collect_suspicious_dense_regions(analysis, perf_envelope)
+    pitch_outline = _per_measure_score_pitches(score_notes_in_range, played_range, omr_empty_measures)
+
+    # ---- Render markdown ----
+    lines: list[str] = [
+        f"# Evidence packet — {manifest.repertoire or 'Untitled'}",
+        f"  ({manifest.movement or '(movement unspecified)'}, {played_range.label()}, source: {played_range.source})",
+        "",
+        "## Lesson scope",
+        f"- Piece: `{manifest.repertoire or 'Untitled'}` — {manifest.movement or '(movement unspecified)'}",
+        f"- Played measures: **{played_range.label()}** (source: `{played_range.source}`)",
+        f"- Audio duration: `{analysis.get('duration_sec')}` sec",
+        f"- Session id: `{manifest.session.session_id}`",
+    ]
+    if manifest.instrument:
+        lines.append(f"- Instrument: `{manifest.instrument}`")
+    if omr_empty_measures:
+        lines.append(
+            f"- ⚠ OMR gaps in played range: {', '.join(f'm.{m}' for m in sorted(omr_empty_measures))} (pitches unknown — comment only on rhythm/timing for these)"
+        )
+    lines.append("")
+
+    # Performance timeline
+    lines += [
+        "## Performance timeline (measures ↔ performed time)",
+        "",
+        "The matcher anchored each played measure to a perf-time window. Use these timestamps when calling tools (`watch`, `listen`, `inspect_*`) so you land on the right music. Boundaries can overlap slightly because chord voices and trills cross measure lines.",
+        "",
+    ]
+    lines += _format_perf_timeline_table(timeline_rows)
+    lines.append("")
+
+    # Score pitches per played measure
+    if pitch_outline or omr_empty_measures:
+        lines += [
+            "## Score pitches per played measure",
+            "",
+            "These are the ONLY pitches in the played range. **Do not cite a pitch that is not in this list** — it is not in the piece. Spell exactly as shown (e.g. use Bb in flat keys, F# in sharp keys). Pitches are listed in score-time order; consecutive duplicates are collapsed.",
+            "",
+        ]
+        for m in played_range.measures():
+            if m in omr_empty_measures:
+                lines.append(f"- **m.{m}: (OMR-gap)** — pitches unknown; comment only on rhythm/timing, not pitch")
+            elif m in pitch_outline:
+                cells = pitch_outline[m][:32]
+                more = f" (+{len(pitch_outline[m]) - 32} more)" if len(pitch_outline[m]) > 32 else ""
                 lines.append(f"- m.{m}: {', '.join(cells)}{more}")
-        if omr_empty_measures:
-            lines.extend([
-                "",
-                "## OMR gaps (pitches unknown for these measures)",
-                "",
-                "The score scanner (Audiveris) failed to extract any notes from the measures below — typically because they contain dense ornaments (trills) the OMR can't parse. The matcher still anchors timing through these measures, but **DO NOT make pitch-specific or intonation-specific claims about these measures**: the score pitches are unknown. Comment only on rhythm/tempo/general timing for notes in these measures.",
-                "",
-                f"- Affected measures: {', '.join(f'm.{m}' for m in sorted(omr_empty_measures))}",
-            ])
+            else:
+                lines.append(f"- m.{m}: (no notes extracted)")
+        lines.append("")
+
+    # Wrong-note candidates
+    if wrong_note_candidates:
+        lines += [
+            f"## Wrong-note candidates ({len(wrong_note_candidates)})",
+            "",
+            "The matcher accepted these performed notes as exactly ±1 semitone off the score. They are CANDIDATES for wrong-note comments — confirm with `inspect_intonation(time, expected_pitch)` before claiming a wrong note (the apparent semitone difference may also be a chromatic neighbor, a string crossing artifact, or basic-pitch noise).",
+            "",
+        ]
+        for r in wrong_note_candidates:
+            sign = "+" if r["delta_cents"] >= 0 else "−"
+            lines.append(
+                f"- `{r['perf_time']:.2f}s` m.{r['measure']} played **{r['detected']}** (score expected **{r['score']}**) {sign}{abs(r['delta_cents'])}c"
+            )
+        lines.append("")
+
+    # Suspicious dense regions
+    if dense_regions:
+        lines += [
+            f"## Suspicious dense regions ({len(dense_regions)})",
+            "",
+            "Windows where detected onsets significantly exceed the score's note density. Often signals trills, ornaments, repeated patterns, or basic-pitch detection noise. Investigate with `watch(start, end, \"what's happening here?\")` or `measure_trill(start, end)`.",
+            "",
+        ]
+        for r in dense_regions:
+            lines.append(f"- `{r['start']:.1f}-{r['end']:.1f}s` — {r['onset_count']} onsets")
+        lines.append("")
+
+    # Optional: piano voicing summary (unchanged from old packet — still useful upfront)
     if "analysis/piano_voicing.json" in manifest.artifacts:
         voicing = storage.read_json(manifest.artifacts["analysis/piano_voicing.json"])
         global_summary = voicing.get("summary", {}).get("global", {})
-        lines.extend([
-            "",
+        lines += [
             "## Piano voicing summary",
+            "",
             f"- Median melody margin dB: `{global_summary.get('median_melody_margin_db')}`",
             f"- Weak/buried melody events: `{global_summary.get('buried_or_weak_melody_events')}`",
             f"- Pedal blur events: `{global_summary.get('pedal_blur_events')}`",
-        ])
+            "",
+        ]
+
+    lines.append(_TOOL_CATALOG_AND_ANTIPATTERNS)
+
     key = store.artifact_key(manifest.session, "analysis/evidence_packet.md")
     storage.write_bytes(key, "\n".join(lines).encode("utf-8"), content_type="text/markdown")
     manifest.artifacts["analysis/evidence_packet.md"] = key

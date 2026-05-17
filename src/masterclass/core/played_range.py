@@ -46,6 +46,71 @@ class PlayedRange:
     def label(self) -> str:
         return f"m.{self.first_measure}-{self.last_measure}"
 
+    def measures(self) -> range:
+        """Iterate measure numbers in the played range (inclusive)."""
+        return range(self.first_measure, self.last_measure + 1)
+
+    def filter_by_measure(self, items: Any, key: str = "measure") -> list[Any]:
+        """Return only items whose ``key`` attribute or dict-field is in range.
+
+        Works on both dicts (``item[key]``) and objects (``item.key``).
+        Items with a missing or non-numeric measure are dropped — call sites
+        that want to KEEP unmatched-measure rows should filter them in.
+
+        This is THE pinch-point: every consumer that needs to scope a
+        notes/comments/regions list to the lesson sandbox should use this
+        helper, not roll their own filter. Doing so guarantees the
+        played-range invariant cannot be silently violated by future code.
+        """
+        out: list[Any] = []
+        for item in (items or []):
+            measure: Any
+            if isinstance(item, dict):
+                measure = item.get(key)
+            else:
+                measure = getattr(item, key, None)
+            if self.contains(measure):
+                out.append(item)
+        return out
+
+    def filter_time_window(
+        self,
+        items: Any,
+        perf_start_sec: float | None,
+        perf_end_sec: float | None,
+        start_key: str = "start",
+        end_key: str = "end",
+    ) -> list[Any]:
+        """Return only items overlapping ``[perf_start_sec, perf_end_sec]``.
+
+        Drops items entirely outside the lesson's perf-time envelope. Used
+        for ranked-regions / dynamics-summary style rows that carry seconds
+        instead of measure numbers but still belong inside the sandbox.
+        """
+        if perf_start_sec is None or perf_end_sec is None:
+            return list(items or [])
+        out: list[Any] = []
+        for item in (items or []):
+            s = item.get(start_key) if isinstance(item, dict) else getattr(item, start_key, None)
+            e = item.get(end_key) if isinstance(item, dict) else getattr(item, end_key, None)
+            if s is None and e is None:
+                continue
+            try:
+                s_f = float(s) if s is not None else None
+                e_f = float(e) if e is not None else s_f
+            except (TypeError, ValueError):
+                continue
+            if s_f is None:
+                s_f = e_f
+            if e_f is None:
+                e_f = s_f
+            if s_f is None or e_f is None:
+                continue
+            if e_f < perf_start_sec or s_f > perf_end_sec:
+                continue
+            out.append(item)
+        return out
+
 
 def _as_int(*values: Any) -> int | None:
     for value in values:

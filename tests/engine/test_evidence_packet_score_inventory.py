@@ -43,6 +43,7 @@ def test_evidence_packet_includes_score_inventory_from_musicxml(
             "analysis/analysis.md": analysis_md.encode("utf-8"),
             "masterclass/reference/musicxml.musicxml": xml,
         },
+        metadata={"first_measure": 1, "last_measure": 2},
     )
 
     updated = build_evidence_packet(
@@ -53,16 +54,18 @@ def test_evidence_packet_includes_score_inventory_from_musicxml(
     text = local_storage.read_bytes(packet_key).decode("utf-8")
 
     # Bug #4: the score-inventory section did not exist; LLM had no
-    # ground truth and hallucinated accidentals.
-    assert "## Score pitches per measure" in text, (
-        "evidence packet is missing the 'Score pitches per measure' section"
+    # ground truth and hallucinated accidentals. The rebuilt packet
+    # calls this section 'Score pitches per played measure' because it
+    # is now scoped to the played-measure sandbox by design.
+    assert "## Score pitches per played measure" in text, (
+        "evidence packet is missing the 'Score pitches per played measure' section"
     )
     # The section must contain the *actual* pitches from the MusicXML.
     # Measure 1 contains C4..F4; measure 2 contains G4..C5.
     assert "m.1:" in text
     assert "m.2:" in text
     # And it must NOT contain accidentals we never put in the score.
-    inventory_start = text.index("## Score pitches per measure")
+    inventory_start = text.index("## Score pitches per played measure")
     inventory = text[inventory_start:]
     # Only check the per-measure bullet rows (they start with "- m.").
     bullet_lines = "\n".join(line for line in inventory.splitlines() if line.startswith("- m."))
