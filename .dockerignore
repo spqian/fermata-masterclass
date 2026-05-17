@@ -1,0 +1,63 @@
+# What NOT to send to the Docker daemon during build. Mirrors .gitignore for
+# the most part; extra entries are caches/binaries that we don't want bloating
+# the build context.
+
+# Local app data
+local_adls/
+sessions/
+logs/
+*.log
+
+# Bundled Windows toolchain — never goes into the Linux image
+tools/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Scratch
+scripts/__pycache__/
+scripts/barline_outputs/
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+client_secret*.json
+*credentials*.json
+*service-account*.json
+*.crt
+id_rsa
+id_rsa.pub
+*.token
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.git/
+.github/
+
+# Hosting / infra
+infra/
+deploy/
+bicep/
+terraform/
+fermata-hosting/
+
+# Tests
+tests/
+
+# Docs (large; not needed at runtime)
+doc/
+README.md
+NOTICE

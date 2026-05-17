@@ -9,6 +9,28 @@ dependencies = []
 api = ["fastapi", "python-multipart", "uvicorn", "authlib", "cryptography"]
 azure = ["azure-storage-file-datalake", "azure-identity"]
 llm = ["google-genai"]
+# Heavy ML deps for transcription + audio analysis. Installed in the cloud
+# image; on dev boxes the tools/python install pulls these via the bundled
+# scripts/install_tools.ps1 + per-need pip installs.
+ml = [
+    "basic-pitch==0.4.0",
+    "piano-transcription-inference==0.0.6",
+    "tensorflow==2.15.0; sys_platform != 'darwin'",
+    "tensorflow-macos; sys_platform == 'darwin'",
+    "torch==2.12.0; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+    "torchlibrosa==0.1.0",
+    "librosa==0.11.0",
+    "soundfile",
+    "pretty_midi",
+    "music21",
+    "numpy<2.0",
+    "scipy",
+    "opencv-python-headless",
+    "PyMuPDF",
+    "matplotlib",
+    "sympy",
+    "setuptools<81",  # piano_transcription_inference uses deprecated pkg_resources
+]
 
 [project.scripts]
 masterclass-v2 = "masterclass.apps.cli.main:main"

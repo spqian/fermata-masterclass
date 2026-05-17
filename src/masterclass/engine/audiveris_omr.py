@@ -20,22 +20,53 @@ def _default_tools_downloads() -> Path:
 
 
 def _resolve_java(java_home: str | None) -> Path:
-    home = Path(java_home) if java_home else _project_root() / "tools" / "jre"
+    """Locate the Java runtime that will execute Audiveris.
+
+    Resolution order:
+    1. ``java_home`` argument when explicitly supplied by the caller.
+    2. ``JAVA_HOME`` environment variable (standard Linux/Docker convention).
+    3. Bundled ``tools/jre`` under the project root (Windows dev box).
+    """
+    if java_home:
+        home = Path(java_home)
+    elif os.environ.get("JAVA_HOME"):
+        home = Path(os.environ["JAVA_HOME"])
+    else:
+        home = _project_root() / "tools" / "jre"
     exe = home / "bin" / ("java.exe" if os.name == "nt" else "java")
     if not exe.exists():
         raise RuntimeError(
             f"Audiveris Java runtime is not installed at {exe}. "
-            "Install the bundled JRE/JDK under tools\\jre."
+            "Set JAVA_HOME, or install the bundled JRE under tools/jre."
         )
     return exe
 
 
 def _resolve_audiveris_app(audiveris_home: str | None) -> Path:
-    home = Path(audiveris_home) if audiveris_home else _project_root() / "tools" / "audiveris"
+    """Locate the directory containing ``audiveris.jar``.
+
+    Resolution order:
+    1. ``audiveris_home`` argument when explicitly supplied by the caller.
+    2. ``AUDIVERIS_HOME`` environment variable.
+    3. Bundled ``tools/audiveris`` under the project root.
+
+    Also searches the standard Debian/Ubuntu install paths
+    (``/opt/Audiveris/lib`` and ``/usr/share/audiveris/lib``) so the .deb
+    package layout works without any env var.
+    """
+    if audiveris_home:
+        home = Path(audiveris_home)
+    elif os.environ.get("AUDIVERIS_HOME"):
+        home = Path(os.environ["AUDIVERIS_HOME"])
+    else:
+        home = _project_root() / "tools" / "audiveris"
     candidates = [
         home / "lib",
         home / "app",
         home / "Audiveris" / "app",
+        Path("/opt/Audiveris/lib"),
+        Path("/opt/Audiveris/app"),
+        Path("/usr/share/audiveris/lib"),
     ]
     candidates.extend(path.parent for path in home.rglob("audiveris.jar") if path.is_file())
     for app_dir in candidates:
@@ -44,7 +75,7 @@ def _resolve_audiveris_app(audiveris_home: str | None) -> Path:
             return app_dir
     raise RuntimeError(
         f"Audiveris is not installed under {home}. Expected an audiveris.jar "
-        "inside tools\\audiveris (for example tools\\audiveris\\Audiveris\\app\\audiveris.jar)."
+        "inside tools/audiveris (Windows) or /opt/Audiveris/lib (Linux .deb)."
     )
 
 
