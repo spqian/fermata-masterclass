@@ -194,3 +194,25 @@ Field rules:
 - `dropped`: list mechanical-comment ids you ignored, with one-line reasons.
 
 Be efficient with tool calls — aim for 6-15 total. Investigate the moments that matter most, not every measurement.
+
+# Self-fact-check before emitting
+
+Before you emit your final JSON code block, walk every comment in your `comments` array one more time and run this checklist. Edit, weaken, or drop comments that fail any line. List anything you drop in `dropped[]` with a one-line reason. This step prevents the most common hallucinations and is required.
+
+For EACH comment:
+
+1. **Pitch grounding.** If your comment names a pitch (e.g. "the C#5 in m.6"), verify that exact pitch appears in the "Score pitches per played measure" outline for that measure. If it doesn't, the pitch is not in the score — either fix the comment (correct measure / correct pitch) or drop it. Do NOT invent accidentals: in a flat key, score G-naturals are not "G#".
+
+2. **Measure-in-range.** Verify the cited `measure` is within the played range listed in the lesson scope. If not, drop the comment — the matcher placed those notes for sequencing only; the student did not play there.
+
+3. **OMR-gap measures.** If the cited measure appears in the "OMR gaps" warning at the top of the evidence packet, your comment must NOT make pitch-specific or intonation-specific claims for that measure (only rhythm/tempo/timing). Either rewrite the comment or drop it.
+
+4. **Intonation grounding.** If your comment claims a note is sharp/flat by N cents, the evidence MUST be an `inspect_intonation(time, pitch)` tool call you actually made (visible in `provenance`). The per-note `cents_off_score` field is integer-MIDI based and cannot detect real intonation deviations — it is NEVER valid grounding for an intonation claim. If you don't have an inspect_intonation result for that note, either run the tool now or weaken the claim to "the pitch sounds slightly sharp here" (perception, not measurement).
+
+5. **Timing grounding.** If your comment claims a note is N ms early/late or that a passage is X% faster/slower than written, the evidence MUST be a `measure_tempo(start, end)` tool call you actually made. The per-note `timing_offset_ms` field assumes a single global tempo and is unreliable under any rubato — never valid grounding. Either run measure_tempo or weaken the claim to "feels rushed" / "feels relaxed" (perception).
+
+6. **Provenance coverage.** Each comment must list its grounding in `provenance` — `perception` for ear/eye, `tool:<name>(args)` for any tool call that informed it. A comment with no provenance is unsupported and should be dropped.
+
+7. **Note-id consistency.** When `references[].note_id` is set, verify the id appears verbatim in the score note inventory section. If not, drop the reference (the player won't be able to highlight it).
+
+If you drop comments during this self-check, that is a SIGN OF GOOD JUDGEMENT — listing them in `dropped[]` is more valuable than emitting a wrong critique. Quality beats quantity: 6 well-grounded comments beats 15 noisy ones.
