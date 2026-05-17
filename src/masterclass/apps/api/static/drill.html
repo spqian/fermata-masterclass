@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Practice Clip · Music Masterclass</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #14161b;
+      --ink: #f0eee6;
+      --ink-mute: #9b9586;
+      --gold: #c9a96a;
+      --gold-soft: rgba(201,169,106,0.55);
+      --danger: #d97a6c;
+      --panel: #1c2028;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.55 "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .wrap { max-width: 800px; margin: 32px auto; padding: 0 20px; }
+    h1 { font: 600 22px/1.3 "Inter", sans-serif; margin-bottom: 4px; }
+    .sub { color: var(--ink-mute); margin: 0 0 18px; font-size: 13px; }
+    .panel {
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .panel h2 {
+      font: 600 12px/1.2 "Inter", sans-serif;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin: 0 0 10px;
+    }
+    .state-badge {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 3px;
+      background: rgba(201,169,106,0.18);
+      color: var(--gold);
+    }
+    .state-badge.failed { background: rgba(217,122,108,0.18); color: var(--danger); }
+    .state-badge.processing { background: rgba(255,255,255,0.10); color: var(--ink-mute); }
+    audio { width: 100%; margin-top: 8px; }
+    table.metrics { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.metrics th, table.metrics td {
+      padding: 4px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      text-align: left;
+      vertical-align: top;
+    }
+    table.metrics th { color: var(--ink-mute); font-weight: 500; width: 40%; }
+    .feedback {
+      white-space: pre-wrap;
+      line-height: 1.7;
+      background: rgba(201,169,106,0.04);
+      border-left: 3px solid var(--gold-soft);
+      padding: 12px 14px;
+      border-radius: 4px;
+    }
+    .instr {
+      background: rgba(0,0,0,0.20);
+      padding: 10px 12px;
+      border-radius: 4px;
+      font-style: italic;
+      color: var(--ink-mute);
+    }
+    a, a:visited { color: var(--gold); }
+    .back { font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <p class="back"><a href="/">← back to home</a></p>
+  <h1>🎤 Practice clip</h1>
+  <p class="sub" id="state-line"><span class="state-badge processing">Loading…</span></p>
+
+  <div class="panel">
+    <h2>Drill instruction</h2>
+    <div class="instr" id="instr">(loading)</div>
+  </div>
+
+  <div class="panel">
+    <h2>Recording</h2>
+    <audio id="player" controls></audio>
+  </div>
+
+  <div class="panel" id="metrics-panel" hidden>
+    <h2>Drill metrics</h2>
+    <table class="metrics" id="metrics-table"></table>
+  </div>
+
+  <div class="panel" id="feedback-panel" hidden>
+    <h2>Teacher feedback</h2>
+    <div class="feedback" id="feedback"></div>
+  </div>
+
+  <div class="panel" id="parent-panel" hidden>
+    <h2>Parent lesson</h2>
+    <div id="parent-link"></div>
+  </div>
+</div>
+
+<script>
+  const DRILL_ID = "__DRILL_SESSION_ID__";
+  function escapeHtml(s) { return String(s).replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+  async function load() {
+    const resp = await fetch(`/drills/${encodeURIComponent(DRILL_ID)}`);
+    if (!resp.ok) {
+      document.getElementById("state-line").innerHTML = `<span class="state-badge failed">${resp.status}</span> ${escapeHtml(await resp.text())}`;
+      return;
+    }
+    const data = await resp.json();
+    const state = data.drill_state || "unknown";
+    const badgeClass = state === "ready" ? "" : state === "failed" ? "failed" : "processing";
+    document.getElementById("state-line").innerHTML = `<span class="state-badge ${badgeClass}">${escapeHtml(state)}</span>${data.session?.metadata?.drill_error ? " · " + escapeHtml(data.session.metadata.drill_error) : ""}`;
+    document.getElementById("instr").textContent = data.drill_instruction || "(none)";
+    document.getElementById("player").src = `/drills/${encodeURIComponent(DRILL_ID)}/audio`;
+    if (data.metrics) {
+      const rows = [];
+      const m = data.metrics;
+      for (const k of ["n_notes", "duration_sec", "tempo_bpm_estimate", "ioi_mean_sec", "ioi_stdev_sec", "ioi_cv", "n_unique_pitches", "low_signal", "low_signal_reason"]) {
+        if (m[k] === undefined || m[k] === null) continue;
+        rows.push(`<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(JSON.stringify(m[k]))}</td></tr>`);
+      }
+      if (m.pitch_class_histogram) {
+        rows.push(`<tr><th>pitch_class_histogram</th><td>${escapeHtml(JSON.stringify(m.pitch_class_histogram))}</td></tr>`);
+      }
+      document.getElementById("metrics-table").innerHTML = rows.join("");
+      document.getElementById("metrics-panel").hidden = false;
+    }
+    if (data.feedback) {
+      document.getElementById("feedback").textContent = data.feedback;
+      document.getElementById("feedback-panel").hidden = false;
+    }
+    if (data.parent_session_id) {
+      document.getElementById("parent-panel").hidden = false;
+      const cmt = data.parent_comment_id ? ` (comment <code>${escapeHtml(data.parent_comment_id)}</code>)` : "";
+      document.getElementById("parent-link").innerHTML =
+        `<a href="/lessons/${encodeURIComponent(data.parent_session_id)}/player" target="_blank">Open lesson player ↗</a>${cmt}`;
+    }
+    if (state !== "ready" && state !== "failed") {
+      setTimeout(load, 5000);
+    }
+  }
+  load();
+</script>
+</body>
+</html>

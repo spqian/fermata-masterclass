@@ -696,6 +696,27 @@
           </div>
         </div>
 
+        <div class="panel">
+          <h2>Practice clips</h2>
+          <p class="page-sub" style="margin-top:-4px">Short recordings of drills the teacher prescribed. Each clip gets a focused feedback reply from the teacher.</p>
+          <div id="drills-list"></div>
+          <form id="drill-upload-form" enctype="multipart/form-data" style="margin-top:14px; display:flex; flex-direction:column; gap:8px; background:rgba(0,0,0,0.12); padding:12px; border-radius:6px;">
+            <label style="font-weight:600">Upload a practice clip</label>
+            <input type="file" name="file" accept="video/*,audio/*" required>
+            <textarea name="drill_instruction" placeholder="What were you practising? (e.g. 'Trill from m.7 slowly, then up to speed')" rows="2" style="background:rgba(0,0,0,0.20); color:inherit; border:1px solid rgba(255,255,255,0.10); padding:6px 8px; border-radius:4px;"></textarea>
+            <div>
+              <label style="font-size:12px; opacity:0.7">Optional: link to a lesson</label>
+              <select name="parent_session_id" style="background:rgba(0,0,0,0.20); color:inherit; border:1px solid rgba(255,255,255,0.10); padding:5px 6px; border-radius:4px; margin-left:6px;">
+                <option value="">— None —</option>
+                ${(lessons || []).filter(l => l.state === "ready").map(l => `<option value="${l.session.session_id}">Lesson ${l.metadata.lesson_number || ""} · ${formatDate(l.created_at)}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <button type="submit" class="primary">Upload practice clip →</button>
+            </div>
+          </form>
+        </div>
+
         <div class="actions-row">
           <button type="button" class="ghost" onclick="goto('/')">← Home</button>
           <span></span>
@@ -703,6 +724,8 @@
       `;
       renderRefStatus(masterclassId, klass, prep, midi);
       renderLessonsList(masterclassId, lessons);
+      renderDrillsList(masterclassId);
+      wireDrillUploadForm(masterclassId);
 
       // Poll if anything is still working.
       const refIsWorking = (s) => s === "queued" || s === "running";
@@ -711,6 +734,86 @@
         const handle = setTimeout(render, 4000);
         stopPolling = () => clearTimeout(handle);
       }
+    }
+
+    async function renderDrillsList(masterclassId) {
+      const box = document.getElementById("drills-list");
+      if (!box) return;
+      let drills = [];
+      try {
+        drills = await fetchJson(`/masterclasses/${masterclassId}/practice-clips`);
+      } catch (e) { drills = []; }
+      if (!drills.length) {
+        box.innerHTML = `<div class="empty">No practice clips yet — upload your first below.</div>`;
+        return;
+      }
+      box.innerHTML = drills.map(d => {
+        const did = d.drill_session_id;
+        const state = d.state || "processing";
+        const stateClass = state === "ready" ? "ready" : state === "failed" ? "failed" : "processing";
+        const instructionPreview = (d.drill_instruction || "(no instruction)").slice(0, 140);
+        const parentLink = d.parent_session_id
+          ? `<a href="/lessons/${d.parent_session_id}/player" target="_blank" style="font-size:11px; opacity:0.7">↗ parent lesson</a>`
+          : "";
+        return `
+          <div class="lesson-row" data-id="${did}">
+            <div class="when">${formatDate(d.created_at)}</div>
+            <div class="body">
+              <div class="title">🎤 ${escapeHtml(instructionPreview)}</div>
+              ${parentLink}
+            </div>
+            <span class="badge ${stateClass}">${escapeHtml(state)}</span>
+            <a class="ghost" style="text-decoration:none" href="/drills/${did}/page">Open →</a>
+            <button class="ghost" type="button" onclick="deleteDrill('${did}', '${masterclassId}')" style="margin-left:6px">Delete</button>
+          </div>
+        `;
+      }).join("");
+      // Auto-refresh while any are still processing.
+      if (drills.some(d => (d.state || "") !== "ready" && (d.state || "") !== "failed")) {
+        setTimeout(() => renderDrillsList(masterclassId), 5000);
+      }
+    }
+
+    async function deleteDrill(drillId, masterclassId) {
+      if (!confirm("Delete this practice clip?")) return;
+      try {
+        await fetch(`/drills/${encodeURIComponent(drillId)}`, { method: "DELETE" });
+      } catch (e) { /* ignore */ }
+      renderDrillsList(masterclassId);
+    }
+    window.deleteDrill = deleteDrill;
+
+    function wireDrillUploadForm(masterclassId) {
+      const form = document.getElementById("drill-upload-form");
+      if (!form) return;
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitBtn = form.querySelector("button[type=submit]");
+        const fileEl = form.querySelector("input[name=file]");
+        const instrEl = form.querySelector("textarea[name=drill_instruction]");
+        const parentEl = form.querySelector("select[name=parent_session_id]");
+        if (!fileEl.files || !fileEl.files[0]) { showToast("Pick a file first.", true); return; }
+        const instruction = (instrEl.value || "").trim();
+        if (!instruction) { showToast("Add a one-line description of what you were practising.", true); return; }
+        const data = new FormData();
+        data.append("file", fileEl.files[0]);
+        data.append("drill_instruction", instruction);
+        if (parentEl.value) data.append("parent_session_id", parentEl.value);
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Uploading…";
+        try {
+          const resp = await fetch(`/masterclasses/${masterclassId}/practice-clips`, { method: "POST", body: data });
+          if (!resp.ok) { throw new Error(await resp.text()); }
+          form.reset();
+          showToast("Practice clip uploaded — analysing.");
+          renderDrillsList(masterclassId);
+        } catch (err) {
+          showToast(err.message || String(err), true);
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Upload practice clip →";
+        }
+      });
     }
 
     const FRIENDLY_REF = {
