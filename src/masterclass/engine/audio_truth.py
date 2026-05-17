@@ -294,13 +294,7 @@ def _load_score_notes_from_musicxml(xml_bytes: bytes) -> list[dict[str, Any]]:
 
 
 def _load_score_notes_auto(storage: ObjectStorage, manifest: SessionManifest) -> tuple[str, list[dict[str, Any]]]:
-    """Load score notes from MusicXML if available, otherwise from MIDI.
-
-    Returns ``(source_label, notes)``. Prefers MusicXML because it has
-    richer per-note metadata (voice, beam groups) and because the audio-
-    truth simplification roadmap moves us off MIDI entirely. Old lessons
-    that only have the Gemini-found MIDI keep working via the fallback.
-    """
+    """Load score notes from MusicXML if available, otherwise from MIDI."""
     catalog = ArtifactCatalog(manifest)
     musicxml_key = catalog.musicxml()
     if musicxml_key and storage.exists(musicxml_key):
@@ -309,6 +303,57 @@ def _load_score_notes_auto(storage: ObjectStorage, manifest: SessionManifest) ->
     if midi_key and storage.exists(midi_key):
         return "midi", _load_score_notes(storage.read_bytes(midi_key))
     return "none", []
+
+
+def _scope_score_notes_to_played_range(
+    score_notes: list[dict[str, Any]],
+    manifest: SessionManifest,
+) -> list[dict[str, Any]]:
+    """Filter score notes to the played measure range.
+
+    Multi-movement MusicXML contains ALL movements (e.g. 117 measures for
+    a 4-movement Bach sonata). If the student only played the Adagio
+    (m.1-22), matching their 2-minute recording against all 117 measures
+    produces nonsensical results. We scope to:
+
+    1. Explicit first/last_measure from manifest metadata (user-specified)
+    2. auto_detected_first/last_measure (from score_prep)
+    3. Full score (no filter) as fallback
+
+    We add a generous margin (+4 measures) because the matcher's monotonic
+    constraint + EMA lag will handle slight over-shooting, but matching
+    against measures 80-117 when the student played m.1-22 is catastrophic.
+    """
+    if not score_notes:
+        return score_notes
+
+    first = None
+    last = None
+    for key_first, key_last in (
+        ("first_measure", "last_measure"),
+        ("auto_detected_first_measure", "auto_detected_last_measure"),
+    ):
+        f = manifest.metadata.get(key_first)
+        l = manifest.metadata.get(key_last)
+        if f is not None and l is not None:
+            try:
+                first, last = int(f), int(l)
+                break
+            except (TypeError, ValueError):
+                continue
+
+    if first is None or last is None:
+        return score_notes
+
+    margin = 4
+    lo = max(1, first - margin)
+    hi = last + margin
+    filtered = [n for n in score_notes if lo <= int(n.get("measure", 0)) <= hi]
+    _LOG.info(
+        "scoped score notes from %d to %d (measures %d-%d, margin %d): %d -> %d notes",
+        first, last, lo, hi, margin, len(score_notes), len(filtered),
+    )
+    return filtered if filtered else score_notes  # never return empty if we had notes
 
 
 def _load_score_notes(midi_bytes: bytes) -> list[dict[str, Any]]:
@@ -586,6 +631,11 @@ def run_audio_truth_pipeline(
 
     matched_count = 0
     score_source, score_notes = _load_score_notes_auto(storage, manifest)
+    # Scope score notes to the played measure range. Without this,
+    # multi-movement MusicXML (e.g. all 4 movements of a Bach sonata)
+    # causes the matcher to spread a 2-minute Adagio recording across
+    # 117 measures of the full sonata, producing nonsensical timestamps.
+    score_notes = _scope_score_notes_to_played_range(score_notes, manifest)
     enriched: list[dict[str, Any]] | None = None
     if score_notes:
         enriched = match_to_score(notes, score_notes)
