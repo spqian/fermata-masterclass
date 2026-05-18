@@ -191,6 +191,9 @@ def prepare_score(
         manifest.metadata["score_prep_substage"] = label
         manifest.metadata["score_prep_updated_at"] = datetime.now(UTC).isoformat()
         masterclass_store.save(manifest)
+        logging.getLogger("masterclass.engine.score_prep").info(
+            "score_prep[%s]: %s", manifest.masterclass.masterclass_id, label,
+        )
 
     started = datetime.now(UTC)
     manifest.metadata["score_prep_started_at"] = started.isoformat()

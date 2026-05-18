@@ -175,6 +175,8 @@ class SharedKeyGeminiProvider:
 
     def _send(self, client: Any, model: str, history: list[Any], content: Any, config: Any) -> Any:
         from google.genai import errors as genai_errors
+        import logging as _logging
+        log = _logging.getLogger("masterclass.agent.gemini")
 
         last_error: Exception | None = None
         max_attempts = 5
@@ -184,18 +186,33 @@ class SharedKeyGeminiProvider:
                 history.append(content)
                 if response.candidates and response.candidates[0].content:
                     history.append(response.candidates[0].content)
+                if attempt > 1:
+                    log.info("Gemini call succeeded on attempt %d/%d (model=%s)", attempt, max_attempts, model)
                 return response
             except genai_errors.ServerError as exc:
                 last_error = exc
                 delay = min(90, 10 * (2 ** (attempt - 1)))  # 10, 20, 40, 80, 90
+                log.warning(
+                    "Gemini ServerError on attempt %d/%d (model=%s): %s — retrying in %ds",
+                    attempt, max_attempts, model, exc, delay,
+                )
                 time.sleep(delay)
             except genai_errors.ClientError as exc:
                 last_error = exc
                 if getattr(exc, "code", None) == 429:
                     delay = min(90, 15 * (2 ** (attempt - 1)))  # 15, 30, 60, 90, 90
+                    log.warning(
+                        "Gemini 429 (rate-limited) on attempt %d/%d (model=%s): %s — retrying in %ds",
+                        attempt, max_attempts, model, exc, delay,
+                    )
                     time.sleep(delay)
                     continue
+                log.error("Gemini ClientError (no retry): %s", exc)
                 raise
+        log.error(
+            "Gemini request giving up after %d attempts: %s: %s",
+            max_attempts, type(last_error).__name__, last_error,
+        )
         raise RuntimeError(f"Gemini request failed after {max_attempts} retries: {type(last_error).__name__}: {last_error}")
 
 

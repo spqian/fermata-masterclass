@@ -177,6 +177,22 @@ def create_app():
         raise RuntimeError("Install API dependencies with: pip install -e .[api]")
 
     _load_dotenv()
+    # Configure root logging so every engine.* and app log line reaches
+    # stdout in the cloud (Container Apps stream → Log Analytics). Without
+    # this, only uvicorn's own access log makes it out and stage-level
+    # failures (Audiveris errors, Gemini retries, etc.) disappear silently.
+    import logging as _logging_mod
+    _level_name = (os.environ.get("MASTERCLASS_LOG_LEVEL") or "INFO").upper()
+    _level = getattr(_logging_mod, _level_name, _logging_mod.INFO)
+    _logging_mod.basicConfig(
+        level=_level,
+        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
+        force=True,  # override uvicorn's handlers so our format wins
+    )
+    # Tame the noisier libraries so the signal stays high.
+    for noisy in ("azure", "azure.core", "urllib3", "uvicorn.access"):
+        _logging_mod.getLogger(noisy).setLevel(_logging_mod.WARNING)
+    _logging_mod.getLogger(__name__).info("App starting up (log level=%s)", _level_name)
     ensure_key_encryption_key()
     app = FastAPI(title="Music Masterclass API")
     storage = _build_storage()

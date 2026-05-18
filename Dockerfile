@@ -79,11 +79,21 @@ ENV JAVA_HOME=/opt/jdk \
 
 # Audiveris 5.6.2 — the same version we ship to dev boxes. Newer versions
 # (5.7+) require Java 24/25 and don't add anything we use.
+#
+# The .deb declares openjdk-21-jre as a runtime dep. We don't want apt to
+# pull in its own JDK on top of the Adoptium one we just installed, so we
+# extract the .deb's payload with `dpkg-deb -x` (bypassing the dependency
+# manifest) and rely on the AUDIVERIS_HOME env var to point at the lib dir.
 ARG AUDIVERIS_URL=https://github.com/Audiveris/audiveris/releases/download/5.6.2/Audiveris-5.6.2-ubuntu22.04-x86_64.deb
 RUN wget -qO /tmp/audiveris.deb "${AUDIVERIS_URL}" \
-    && (dpkg -i /tmp/audiveris.deb || apt-get install -y -f --no-install-recommends) \
+    && mkdir -p /opt \
+    && dpkg-deb -x /tmp/audiveris.deb / \
     && rm /tmp/audiveris.deb \
-    && rm -rf /var/lib/apt/lists/*
+    && test -f /opt/Audiveris/lib/audiveris.jar || ( \
+        echo "ERROR: Audiveris jar not at /opt/Audiveris/lib/audiveris.jar after extract"; \
+        ls -la /opt/ 2>&1; \
+        find /opt -name 'audiveris.jar' 2>/dev/null; \
+        exit 1)
 ENV AUDIVERIS_HOME=/opt/Audiveris
 
 # Copy installed Python packages from the builder stage.
