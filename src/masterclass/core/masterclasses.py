@@ -73,3 +73,15 @@ class MasterclassStore:
         if session_id not in manifest.lessons:
             manifest.lessons.append(session_id)
             self.save(manifest)
+
+    def delete(self, ref: MasterclassRef) -> int:
+        """Recursively delete every artifact under a masterclass prefix and
+        return the count of objects removed. NOTE: the caller is responsible
+        for first removing child sessions (lessons + drills) — this only
+        removes the masterclass's OWN data (manifest, score files, etc.)."""
+        return self.storage.delete_prefix(masterclass_prefix(ref))
+
+    def delete_by_id(self, ctx: TenantContext, masterclass_id: str) -> int:
+        if not masterclass_id or "/" in masterclass_id or "\\" in masterclass_id or ".." in masterclass_id:
+            raise ValueError("masterclass_id must be a path-safe id")
+        return self.delete(MasterclassRef(ctx.tenant_id, ctx.user_id, masterclass_id))

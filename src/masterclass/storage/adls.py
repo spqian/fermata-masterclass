@@ -100,7 +100,51 @@ class AdlsObjectStorage(ObjectStorage):
 
     def list_keys(self, prefix: str) -> Iterable[str]:
         prefix = self._validate_key(prefix.rstrip("/"))
-        for path in self._fs.get_paths(path=prefix, recursive=True):
+        try:
+            paths = list(self._fs.get_paths(path=prefix, recursive=True))
+        except Exception as exc:
+            translated = self._translate_not_found(exc, prefix)
+            if isinstance(translated, FileNotFoundError):
+                return
+            raise
+        for path in paths:
             if not path.is_directory:
                 yield str(path.name)
+
+    def delete_key(self, key: str) -> bool:
+        key = self._validate_key(key)
+        client = self._fs.get_file_client(key)
+        try:
+            client.delete_file()
+            return True
+        except Exception as exc:
+            translated = self._translate_not_found(exc, key)
+            if isinstance(translated, FileNotFoundError):
+                return False
+            raise
+
+    def delete_prefix(self, prefix: str) -> int:
+        prefix = self._validate_key(prefix.rstrip("/"))
+        # ADLS has a directory client that does a single recursive delete —
+        # much more efficient than iterating list_keys and deleting one at
+        # a time, and avoids partial-failure mid-iteration.
+        try:
+            dir_client = self._fs.get_directory_client(prefix)
+            if not dir_client.exists():
+                # Maybe it's a leaf file rather than a directory.
+                file_client = self._fs.get_file_client(prefix)
+                if file_client.exists():
+                    file_client.delete_file()
+                    return 1
+                return 0
+            # Count before delete so callers can report it; the SDK doesn't
+            # return a count from delete_directory.
+            count = sum(1 for _ in self.list_keys(prefix))
+            dir_client.delete_directory()
+            return count
+        except Exception as exc:
+            translated = self._translate_not_found(exc, prefix)
+            if isinstance(translated, FileNotFoundError):
+                return 0
+            raise
 

@@ -75,3 +75,14 @@ class SessionStore:
         manifest.artifacts[artifact_key] = key
         self.save(manifest)
         return key
+
+    def delete(self, ref: SessionRef) -> int:
+        """Recursively delete every artifact under a session prefix and return
+        the count of objects removed. Idempotent — deleting a non-existent
+        session returns 0 instead of raising."""
+        return self.storage.delete_prefix(session_prefix(ref))
+
+    def delete_by_id(self, ctx: TenantContext, session_id: str) -> int:
+        if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id:
+            raise ValueError("session_id must be a path-safe id")
+        return self.delete(SessionRef(ctx.tenant_id, ctx.user_id, session_id))

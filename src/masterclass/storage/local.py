@@ -60,3 +60,31 @@ class LocalObjectStorage(ObjectStorage):
             for path in base.rglob("*")
             if path.is_file()
         )
+
+    def delete_key(self, key: str) -> bool:
+        path = self._path(key)
+        if not path.exists():
+            return False
+        path.unlink()
+        # Prune empty parent directories up to (but not including) the root.
+        parent = path.parent
+        while parent != self.root and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        return True
+
+    def delete_prefix(self, prefix: str) -> int:
+        base = self._path(prefix)
+        if not base.exists():
+            return 0
+        if base.is_file():
+            base.unlink()
+            return 1
+        count = sum(1 for p in base.rglob("*") if p.is_file())
+        shutil.rmtree(base)
+        # Prune empty ancestors after the recursive delete.
+        parent = base.parent
+        while parent != self.root and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        return count

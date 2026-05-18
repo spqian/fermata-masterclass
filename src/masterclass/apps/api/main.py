@@ -213,6 +213,22 @@ def create_app():
                 return server_key
         raise HTTPException(status_code=402, detail="Add your Gemini API key in Settings to run a lesson")
 
+    def _require_user_has_gemini_key(user_id: str) -> None:
+        """Block creation operations that would later need a Gemini key.
+
+        Called early from POST /masterclasses, POST /masterclasses/{id}/lessons/run,
+        POST /sessions, and the practice-clip endpoints so the user gets a
+        clean 402 BEFORE we write any artifacts. Without this, the upload
+        would succeed and stages would fail later with confusing errors.
+        """
+        try:
+            _gemini_api_key_for_user(user_id)
+        except HTTPException:
+            raise HTTPException(
+                status_code=402,
+                detail="You need a Gemini API key to create lessons. Add yours in Settings (https://aistudio.google.com/apikey).",
+            )
+
     def _build_llm_provider_for_user(user_id: str, config=None):
         if os.environ.get("MASTERCLASS_LLM_PROVIDER", "gemini").lower() == "dry-run":
             from masterclass.agent.dry_run import DryRunLlmProvider
@@ -773,6 +789,45 @@ def create_app():
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="masterclass not found") from exc
 
+    @app.delete("/masterclasses/{masterclass_id}")
+    def delete_masterclass(masterclass_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        """Cascade-delete a masterclass:
+
+        1. Load the manifest (verifies caller owns it; FileNotFoundError -> 404).
+        2. For every child lesson (and any standalone drills attached to the
+           masterclass), recursively delete that session's prefix.
+        3. Finally delete the masterclass's own prefix (manifest, score files).
+
+        Idempotent — if any child is already gone we just skip it.
+        """
+        try:
+            manifest = masterclasses.load_by_id(ctx, masterclass_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="masterclass not found") from exc
+
+        sessions_deleted = 0
+        objects_deleted = 0
+        # Gather child session ids: tracked lessons + any standalone drills.
+        child_ids: list[str] = list(manifest.lessons or [])
+        for drill_id in (manifest.metadata.get("drill_session_ids") or []):
+            if isinstance(drill_id, str) and drill_id not in child_ids:
+                child_ids.append(drill_id)
+        for sid in child_ids:
+            try:
+                removed = store.delete_by_id(ctx, sid)
+                if removed:
+                    sessions_deleted += 1
+                    objects_deleted += removed
+            except ValueError:
+                # Bad session id in the list — log and continue.
+                continue
+        objects_deleted += masterclasses.delete_by_id(ctx, masterclass_id)
+        return {
+            "masterclass_id": masterclass_id,
+            "sessions_deleted": sessions_deleted,
+            "objects_deleted": objects_deleted,
+        }
+
     @app.post("/masterclasses")
     async def create_masterclass(
         background: BackgroundTasks,
@@ -786,6 +841,11 @@ def create_app():
         notes: str | None = Form(default=None),
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
+        # Gemini may be required as a fallback during score_prep when
+        # Audiveris can't parse the PDF, and is definitely required by every
+        # downstream lesson stage. Fail fast so the user doesn't upload a
+        # score only to hit 402 later.
+        _require_user_has_gemini_key(ctx.user_id)
         has_score_pdf = bool(score_file and score_file.filename)
         has_midi = bool(midi_file and midi_file.filename)
         if not has_score_pdf and not has_midi:
@@ -989,6 +1049,7 @@ def create_app():
         notes: str | None = Form(default=None),
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
+        _require_user_has_gemini_key(ctx.user_id)
         try:
             class_manifest = masterclasses.load_by_id(ctx, masterclass_id)
         except FileNotFoundError as exc:
@@ -1046,6 +1107,7 @@ def create_app():
 
     @app.post("/sessions")
     def create_session(body: CreateSessionRequest, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        _require_user_has_gemini_key(ctx.user_id)
         manifest = store.create(
             ctx,
             source_filename=body.source_filename,
@@ -1143,6 +1205,32 @@ def create_app():
             except FileNotFoundError:
                 masterclass_doc = None
         return {"session": manifest.to_json(), "masterclass": masterclass_doc}
+
+    @app.delete("/lessons/{session_id}")
+    def delete_lesson(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
+        """Delete a lesson and all its artifacts.
+
+        Also un-links the session from its parent masterclass's ``lessons``
+        list so the lesson list view doesn't show a ghost row. Idempotent.
+        """
+        try:
+            manifest = store.load_by_id(ctx, session_id)
+            _require_lesson_kind(manifest)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="lesson not found") from exc
+
+        masterclass_id = manifest.metadata.get("masterclass_id")
+        if masterclass_id:
+            try:
+                parent = masterclasses.load_by_id(ctx, masterclass_id)
+                if session_id in (parent.lessons or []):
+                    parent.lessons.remove(session_id)
+                    masterclasses.save(parent)
+            except FileNotFoundError:
+                pass  # parent already deleted; nothing to unlink
+
+        objects_deleted = store.delete_by_id(ctx, session_id)
+        return {"session_id": session_id, "objects_deleted": objects_deleted}
 
     @app.get("/lessons/{session_id}/comments")
     def lesson_comments(session_id: str, ctx: TenantContext = Depends(tenant_from_header)) -> dict:
@@ -2262,6 +2350,7 @@ def create_app():
         file: UploadFile = File(...),
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
+        _require_user_has_gemini_key(ctx.user_id)
         # Validate parent integrity: lesson must exist, kind=lesson,
         # owned by caller, and the comment must exist.
         parent = _load_lesson_manifest(store, ctx, session_id)
@@ -2319,6 +2408,7 @@ def create_app():
         parent_comment_id: str | None = Form(default=None),
         ctx: TenantContext = Depends(tenant_from_header),
     ) -> dict:
+        _require_user_has_gemini_key(ctx.user_id)
         try:
             mc = masterclasses.load_by_id(ctx, masterclass_id)
         except FileNotFoundError as exc:

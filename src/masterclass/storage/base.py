@@ -36,8 +36,46 @@ class ObjectStorage(ABC):
     def list_keys(self, prefix: str) -> Iterable[str]:
         raise NotImplementedError
 
+    def delete_key(self, key: str) -> bool:
+        """Delete a single object. Returns True if it existed and was removed,
+        False if it didn't exist. Other errors propagate.
+
+        Default implementation: list_keys + best-effort. Subclasses should
+        override with the native delete operation."""
+        raise NotImplementedError
+
+    def delete_prefix(self, prefix: str) -> int:
+        """Recursively delete every object under ``prefix``. Returns the count
+        of keys actually deleted. Used by lesson/masterclass/drill cascades.
+
+        Default implementation iterates list_keys and deletes one by one.
+        Subclasses can override for atomicity / efficiency."""
+        deleted = 0
+        # Materialise the list first so iteration isn't disturbed by deletes.
+        keys = list(self.list_keys(prefix))
+        for key in keys:
+            try:
+                if self.delete_key(key):
+                    deleted += 1
+            except FileNotFoundError:
+                # Concurrent delete or already gone; ignore.
+                continue
+        return deleted
+
     def read_json(self, key: str) -> Any:
-        return json.loads(self.read_bytes(key).decode("utf-8"))
+        # ADLS upload (create+append+flush) has a brief window where the file
+        # exists but is empty. Concurrent reads during a pipeline-stage save
+        # used to crash callers with JSONDecodeError("Expecting value", ..., 0).
+        # Retry up to 3 times with short backoff if we get empty bytes.
+        import time as _time
+        for attempt in range(3):
+            data = self.read_bytes(key)
+            if data:
+                return json.loads(data.decode("utf-8"))
+            if attempt < 2:
+                _time.sleep(0.1 * (attempt + 1))
+        # Empty after retries: surface the read so callers see the real key.
+        raise json.JSONDecodeError("Expecting value (file was empty after retries)", "", 0)
 
     def write_json(self, key: str, data: Any) -> None:
         payload = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
