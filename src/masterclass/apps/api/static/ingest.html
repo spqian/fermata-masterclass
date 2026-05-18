@@ -167,6 +167,25 @@
       font-size: 22px;
       font-weight: 700;
     }
+    .row-delete {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--ink-mute);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .row-delete:hover {
+      color: var(--danger);
+      border-color: rgba(217,122,108,0.45);
+      background: rgba(217,122,108,0.08);
+    }
+    .row-delete:disabled {
+      cursor: default;
+      opacity: 0.4;
+    }
 
     .field {
       display: flex; flex-direction: column; gap: 8px;
@@ -567,6 +586,7 @@
                   <div class="title">${escapeHtml(c.piece_name)}</div>
                   <div class="sub">${sub}</div>
                 </div>
+                <button type="button" class="row-delete" data-mc-delete="${m}" data-name="${escapeHtml(c.piece_name)}" title="Delete this masterclass and all its lessons" aria-label="Delete">🗑</button>
                 <div class="arrow">→</div>
               </div>`;
           }).join("")}
@@ -577,7 +597,36 @@
         </div>
       `;
       for (const card of app.querySelectorAll(".picker-card[data-id]")) {
-        card.onclick = () => goto(`/class/${card.dataset.id}`);
+        card.onclick = (event) => {
+          // Don't navigate when the trash icon is clicked
+          if (event.target.closest("[data-mc-delete]")) return;
+          goto(`/class/${card.dataset.id}`);
+        };
+      }
+      for (const btn of app.querySelectorAll("[data-mc-delete]")) {
+        btn.onclick = async (event) => {
+          event.stopPropagation();
+          const mcId = btn.dataset.mcDelete;
+          const name = btn.dataset.name || mcId;
+          const confirmed = window.confirm(
+            `Delete masterclass "${name}"?\n\nThis removes all of its lessons, drills, and analysis. ` +
+            `This cannot be undone.`
+          );
+          if (!confirmed) return;
+          btn.disabled = true;
+          btn.textContent = "…";
+          try {
+            const res = await fetchJson(`/masterclasses/${encodeURIComponent(mcId)}`, { method: "DELETE" });
+            showToast(`Deleted "${name}" (${res.sessions_deleted || 0} session${res.sessions_deleted === 1 ? "" : "s"}).`);
+            // Re-fetch and re-render
+            const refreshed = await fetchJson("/masterclasses").catch(() => []);
+            if (!refreshed.length) goto("/"); else renderContinueList(refreshed);
+          } catch (err) {
+            showToast(`Could not delete: ${err.message || err}`);
+            btn.disabled = false;
+            btn.textContent = "🗑";
+          }
+        };
       }
     }
 
@@ -913,9 +962,31 @@
             </div>
             <span class="badge ${stateClass}">${escapeHtml(state.replace(/_/g, " "))}</span>
             ${action}
+            <button type="button" class="row-delete" data-lesson-delete="${sid}" data-lesson-label="Lesson ${num} · ${escapeHtml(measures)}" title="Delete this lesson and all its analysis" aria-label="Delete">🗑</button>
           </div>
         `;
       }).join("");
+      for (const btn of box.querySelectorAll("[data-lesson-delete]")) {
+        btn.onclick = async (event) => {
+          event.stopPropagation();
+          const sid = btn.dataset.lessonDelete;
+          const label = btn.dataset.lessonLabel || sid;
+          if (!window.confirm(`Delete this lesson?\n\n${label}\n\nThis removes the audio, video, all analysis, and the teacher's notes. Cannot be undone.`)) return;
+          btn.disabled = true;
+          btn.textContent = "…";
+          try {
+            await fetchJson(`/lessons/${encodeURIComponent(sid)}`, { method: "DELETE" });
+            showToast("Lesson deleted.");
+            // Re-fetch the lesson list for this class
+            const updated = await fetchJson(`/masterclasses/${encodeURIComponent(masterclassId)}/lessons`).catch(() => []);
+            renderLessonsList(masterclassId, updated);
+          } catch (err) {
+            showToast(`Could not delete: ${err.message || err}`);
+            btn.disabled = false;
+            btn.textContent = "🗑";
+          }
+        };
+      }
     }
 
     // ---------- view: new lesson ----------
