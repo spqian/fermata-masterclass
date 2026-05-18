@@ -35,18 +35,41 @@ class AdlsObjectStorage(ObjectStorage):
             raise ValueError(f"unsafe storage key: {key}")
         return key
 
+    @staticmethod
+    def _translate_not_found(exc: Exception, key: str) -> Exception:
+        """Map Azure SDK ResourceNotFoundError to the stdlib FileNotFoundError
+        that the rest of the app expects from any ObjectStorage backend.
+
+        Without this every consumer that does
+            try: storage.read_*(key)
+            except FileNotFoundError: ...create-on-miss...
+        explodes with a 500 in cloud because Azure raises a different type
+        than LocalObjectStorage. Keeping the boundary uniform here saves
+        every caller a try/except in two flavors.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+        if isinstance(exc, ResourceNotFoundError):
+            return FileNotFoundError(key)
+        return exc
+
     def exists(self, key: str) -> bool:
         key = self._validate_key(key)
         return self._fs.get_file_client(key).exists()
 
     def read_bytes(self, key: str) -> bytes:
         key = self._validate_key(key)
-        return self._fs.get_file_client(key).download_file().readall()
+        try:
+            return self._fs.get_file_client(key).download_file().readall()
+        except Exception as exc:
+            raise self._translate_not_found(exc, key) from exc
 
     def read_to_file(self, key: str, path: Path) -> None:
         key = self._validate_key(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        downloader = self._fs.get_file_client(key).download_file()
+        try:
+            downloader = self._fs.get_file_client(key).download_file()
+        except Exception as exc:
+            raise self._translate_not_found(exc, key) from exc
         with path.open("wb") as handle:
             downloader.readinto(handle)
 
