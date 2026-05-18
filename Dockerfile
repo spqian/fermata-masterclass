@@ -89,12 +89,16 @@ RUN wget -qO /tmp/audiveris.deb "${AUDIVERIS_URL}" \
     && mkdir -p /opt \
     && dpkg-deb -x /tmp/audiveris.deb / \
     && rm /tmp/audiveris.deb \
-    && test -f /opt/Audiveris/lib/audiveris.jar || ( \
-        echo "ERROR: Audiveris jar not at /opt/Audiveris/lib/audiveris.jar after extract"; \
+    && JAR=$(find /opt -name 'audiveris.jar' -type f | head -n1) \
+    && test -n "$JAR" || ( \
+        echo "ERROR: no audiveris.jar found after extract"; \
         ls -la /opt/ 2>&1; \
-        find /opt -name 'audiveris.jar' 2>/dev/null; \
-        exit 1)
-ENV AUDIVERIS_HOME=/opt/Audiveris
+        exit 1) \
+    && echo "Audiveris jar at: $JAR"
+# The 5.6.2 .deb extracts to /opt/audiveris/lib/app/audiveris.jar (lowercase).
+# audiveris_omr.py uses rglob from AUDIVERIS_HOME to find the jar regardless
+# of subdir layout, so this env value just needs to be the install root.
+ENV AUDIVERIS_HOME=/opt/audiveris
 
 # Copy installed Python packages from the builder stage.
 COPY --from=builder /install /usr/local
