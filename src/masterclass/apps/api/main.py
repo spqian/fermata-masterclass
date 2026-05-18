@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -177,24 +178,24 @@ def create_app():
         raise RuntimeError("Install API dependencies with: pip install -e .[api]")
 
     _load_dotenv()
-    # Configure root logging so every engine.* and app log line reaches
-    # stdout in the cloud (Container Apps stream → Log Analytics). Without
-    # this, only uvicorn's own access log makes it out and stage-level
-    # failures (Audiveris errors, Gemini retries, etc.) disappear silently.
-    import logging as _logging_mod
-    _level_name = (os.environ.get("MASTERCLASS_LOG_LEVEL") or "INFO").upper()
-    _level = getattr(_logging_mod, _level_name, _logging_mod.INFO)
-    _logging_mod.basicConfig(
-        level=_level,
-        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
-        force=True,  # override uvicorn's handlers so our format wins
+    # Initialise structured JSON logging + trace-context propagation. This
+    # replaces a previous inline basicConfig() call. See
+    # masterclass.observability for details on what gets emitted and how to
+    # query it in Log Analytics.
+    from masterclass.observability import (
+        RequestContextMiddleware,
+        bind_request_principal,
+        setup_logging,
+        with_job_context,
     )
-    # Tame the noisier libraries so the signal stays high.
-    for noisy in ("azure", "azure.core", "urllib3", "uvicorn.access"):
-        _logging_mod.getLogger(noisy).setLevel(_logging_mod.WARNING)
-    _logging_mod.getLogger(__name__).info("App starting up (log level=%s)", _level_name)
+    _level_name = setup_logging()
+    logging.getLogger(__name__).info(
+        "App starting up",
+        extra={"log_level": _level_name, "event": "app.start"},
+    )
     ensure_key_encryption_key()
     app = FastAPI(title="Music Masterclass API")
+    app.add_middleware(RequestContextMiddleware)
     storage = _build_storage()
     masterclasses = MasterclassStore(storage)
     store = SessionStore(storage)
@@ -287,243 +288,253 @@ def create_app():
         a transient Gemini API error doesn't force a 4-minute re-ingest.
         """
 
-        import logging
-        try:
-            ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
-            ffmpeg = FfmpegToolchain.discover()
-            manifest = store.load_by_id(ctx, session_id)
+        with with_job_context(
+            job_id=session_id,
+            job_kind="lesson_resume" if resume else "lesson",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            masterclass_id=masterclass_id,
+        ):
+            logging.getLogger(__name__).info(
+                "lesson background job starting", extra={"event": "job.start", "resume": resume},
+            )
             try:
-                def mark_stage(stage: str, state: str, error: str | None = None) -> None:
-                    manifest.metadata[f"{stage}_state"] = state
-                    manifest.metadata[f"{stage}_error"] = error
-                    manifest.metadata[f"{stage}_updated_at"] = datetime.now(UTC).isoformat()
-                    store.save(manifest)
-
-                def _stage_done(stage: str) -> bool:
-                    """In resume mode, a stage is done if it's ready or skipped*."""
-                    if not resume:
-                        return False
-                    cur = manifest.metadata.get(f"{stage}_state") or ""
-                    return cur == "ready" or cur.startswith("skipped")
-
-                def run_required(stage: str, func) -> None:
-                    """Strict stage: failure aborts the whole pipeline. Skip if
-                    resuming and already done."""
-                    if _stage_done(stage):
-                        return
-                    mark_stage(stage, "running")
-                    result = func()
-                    if result is not None and hasattr(result, "metadata"):
-                        # extract_media/analyze/build_evidence_packet return a
-                        # fresh manifest. Update our local binding so subsequent
-                        # mark_stage / run_required calls see the latest state.
-                        nonlocal manifest
-                        manifest = result
-                    mark_stage(stage, "ready")
-
-                run_required("extract_media", lambda: extract_media_artifacts(store=store, storage=storage, ffmpeg=ffmpeg, manifest=manifest, frame_interval_sec=10.0))
-                run_required("analyze", lambda: analyze_session(store=store, storage=storage, manifest=manifest))
-                run_required("evidence_packet", lambda: build_evidence_packet(store=store, storage=storage, manifest=manifest))
-
-                def warn_stage(stage: str, exc: Exception) -> None:
-                    manifest.metadata[f"{stage}_state"] = "failed"
-                    manifest.metadata[f"{stage}_error"] = f"{type(exc).__name__}: {exc}"
-                    manifest.errors.append({
-                        "stage": stage,
-                        "warning": True,
-                        "error": manifest.metadata[f"{stage}_error"],
-                        "at": datetime.now(UTC).isoformat(),
-                    })
-                    store.save(manifest)
-
-                def run_best_effort(stage: str, func) -> None:
-                    if _stage_done(stage):
-                        return
-                    manifest.metadata[f"{stage}_state"] = "running"
-                    store.save(manifest)
-                    try:
-                        func()
-                        manifest.metadata[f"{stage}_state"] = "ready"
-                        manifest.metadata[f"{stage}_error"] = None
+                ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+                ffmpeg = FfmpegToolchain.discover()
+                manifest = store.load_by_id(ctx, session_id)
+                try:
+                    def mark_stage(stage: str, state: str, error: str | None = None) -> None:
+                        manifest.metadata[f"{stage}_state"] = state
+                        manifest.metadata[f"{stage}_error"] = error
                         manifest.metadata[f"{stage}_updated_at"] = datetime.now(UTC).isoformat()
                         store.save(manifest)
-                    except Exception as exc:
-                        warn_stage(stage, exc)
 
-                class_manifest = None
-                if masterclass_id:
-                    try:
-                        class_manifest = masterclasses.load_by_id(ctx, masterclass_id)
-                    except FileNotFoundError:
-                        class_manifest = None
+                    def _stage_done(stage: str) -> bool:
+                        """In resume mode, a stage is done if it's ready or skipped*."""
+                        if not resume:
+                            return False
+                        cur = manifest.metadata.get(f"{stage}_state") or ""
+                        return cur == "ready" or cur.startswith("skipped")
 
-                run_best_effort("onsets", lambda: detect_rich_onsets(storage=storage, store=store, manifest=manifest))
+                    def run_required(stage: str, func) -> None:
+                        """Strict stage: failure aborts the whole pipeline. Skip if
+                        resuming and already done."""
+                        if _stage_done(stage):
+                            return
+                        mark_stage(stage, "running")
+                        result = func()
+                        if result is not None and hasattr(result, "metadata"):
+                            # extract_media/analyze/build_evidence_packet return a
+                            # fresh manifest. Update our local binding so subsequent
+                            # mark_stage / run_required calls see the latest state.
+                            nonlocal manifest
+                            manifest = result
+                        mark_stage(stage, "ready")
 
-                # Audio-truth alignment: primary timing source. Uses ByteDance
-                # PTI for piano lessons and Spotify basic-pitch for everything
-                # else, then matches detected notes against the reference score
-                # (MusicXML preferred, MIDI fallback) for per-note staff/voice/
-                # measure tagging. Output artifacts:
-                #   analysis/audio_truth_notes.json          (raw transcriber)
-                #   analysis/audio_truth_matched_notes.json  (+ score tagging)
-                #   analysis/aligned_notes.json              (legacy shim, new name)
-                #   analysis/hmm_aligned_notes.json          (legacy shim, deprecated name)
-                #   analysis/hmm_alignment.json              (legacy shim, deprecated name)
-                # The legacy shim artifacts are synthesised from audio_truth
-                # data so the old consumers (voicing/rhythm/intonation/
-                # score_map/inspect_*) keep working unchanged. They will be
-                # removed once those consumers are migrated to read
-                # audio_truth_matched_notes directly.
-                run_best_effort(
-                    "audio_truth",
-                    lambda: run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest),
-                )
-                # Dual-write the audio-truth status under the vocabulary-clean
-                # key ``aligned_notes_state`` so newer UI/code can read either
-                # name. We keep writing ``audio_truth_state`` (above) until
-                # every consumer has migrated; eventually that key, the
-                # legacy hmm-named shim artifacts, and this dual-write all
-                # go away in the same release.
-                _at_state = manifest.metadata.get("audio_truth_state")
-                if _at_state is not None:
-                    manifest.metadata["aligned_notes_state"] = _at_state
-                    if "audio_truth_error" in manifest.metadata:
-                        manifest.metadata["aligned_notes_error"] = manifest.metadata.get("audio_truth_error")
-                    if "audio_truth_updated_at" in manifest.metadata:
-                        manifest.metadata["aligned_notes_updated_at"] = manifest.metadata["audio_truth_updated_at"]
-                    store.save(manifest)
+                    run_required("extract_media", lambda: extract_media_artifacts(store=store, storage=storage, ffmpeg=ffmpeg, manifest=manifest, frame_interval_sec=10.0))
+                    run_required("analyze", lambda: analyze_session(store=store, storage=storage, manifest=manifest))
+                    run_required("evidence_packet", lambda: build_evidence_packet(store=store, storage=storage, manifest=manifest))
 
-                run_best_effort(
-                    "score_map",
-                    lambda: persist_score_map(
-                        storage=storage,
-                        store=store,
-                        manifest=manifest,
-                        result=build_score_map(storage=storage, masterclass_store=masterclasses, store=store, manifest=manifest),
-                    ),
-                )
+                    def warn_stage(stage: str, exc: Exception) -> None:
+                        manifest.metadata[f"{stage}_state"] = "failed"
+                        manifest.metadata[f"{stage}_error"] = f"{type(exc).__name__}: {exc}"
+                        manifest.errors.append({
+                            "stage": stage,
+                            "warning": True,
+                            "error": manifest.metadata[f"{stage}_error"],
+                            "at": datetime.now(UTC).isoformat(),
+                        })
+                        store.save(manifest)
 
-                profile = load_instrument_profile(manifest.instrument_profile)
-                # Gate downstream analyses on the audio-truth stage status.
-                # We read ``audio_truth_state`` here for back-compat; the
-                # equivalent vocabulary-clean key ``aligned_notes_state``
-                # is mirrored immediately after the audio-truth run above
-                # so newer code can read either name. Both will live for
-                # one release; once every consumer has migrated to
-                # ``aligned_notes_state``, remove the dual-write and read
-                # only the new name.
-                if intonation_enabled_for_profile(profile) and manifest.metadata.get("audio_truth_state") == "ready":
-                    run_best_effort("intonation", lambda: analyze_intonation(storage=storage, store=store, manifest=manifest))
-                else:
-                    manifest.metadata["intonation_state"] = "skipped"
-                    store.save(manifest)
+                    def run_best_effort(stage: str, func) -> None:
+                        if _stage_done(stage):
+                            return
+                        manifest.metadata[f"{stage}_state"] = "running"
+                        store.save(manifest)
+                        try:
+                            func()
+                            manifest.metadata[f"{stage}_state"] = "ready"
+                            manifest.metadata[f"{stage}_error"] = None
+                            manifest.metadata[f"{stage}_updated_at"] = datetime.now(UTC).isoformat()
+                            store.save(manifest)
+                        except Exception as exc:
+                            warn_stage(stage, exc)
 
-                if manifest.metadata.get("audio_truth_state") == "ready":
+                    class_manifest = None
+                    if masterclass_id:
+                        try:
+                            class_manifest = masterclasses.load_by_id(ctx, masterclass_id)
+                        except FileNotFoundError:
+                            class_manifest = None
+
+                    run_best_effort("onsets", lambda: detect_rich_onsets(storage=storage, store=store, manifest=manifest))
+
+                    # Audio-truth alignment: primary timing source. Uses ByteDance
+                    # PTI for piano lessons and Spotify basic-pitch for everything
+                    # else, then matches detected notes against the reference score
+                    # (MusicXML preferred, MIDI fallback) for per-note staff/voice/
+                    # measure tagging. Output artifacts:
+                    #   analysis/audio_truth_notes.json          (raw transcriber)
+                    #   analysis/audio_truth_matched_notes.json  (+ score tagging)
+                    #   analysis/aligned_notes.json              (legacy shim, new name)
+                    #   analysis/hmm_aligned_notes.json          (legacy shim, deprecated name)
+                    #   analysis/hmm_alignment.json              (legacy shim, deprecated name)
+                    # The legacy shim artifacts are synthesised from audio_truth
+                    # data so the old consumers (voicing/rhythm/intonation/
+                    # score_map/inspect_*) keep working unchanged. They will be
+                    # removed once those consumers are migrated to read
+                    # audio_truth_matched_notes directly.
                     run_best_effort(
-                        "rhythm",
-                        lambda: persist_rhythm(
+                        "audio_truth",
+                        lambda: run_audio_truth_pipeline(storage=storage, store=store, manifest=manifest),
+                    )
+                    # Dual-write the audio-truth status under the vocabulary-clean
+                    # key ``aligned_notes_state`` so newer UI/code can read either
+                    # name. We keep writing ``audio_truth_state`` (above) until
+                    # every consumer has migrated; eventually that key, the
+                    # legacy hmm-named shim artifacts, and this dual-write all
+                    # go away in the same release.
+                    _at_state = manifest.metadata.get("audio_truth_state")
+                    if _at_state is not None:
+                        manifest.metadata["aligned_notes_state"] = _at_state
+                        if "audio_truth_error" in manifest.metadata:
+                            manifest.metadata["aligned_notes_error"] = manifest.metadata.get("audio_truth_error")
+                        if "audio_truth_updated_at" in manifest.metadata:
+                            manifest.metadata["aligned_notes_updated_at"] = manifest.metadata["audio_truth_updated_at"]
+                        store.save(manifest)
+
+                    run_best_effort(
+                        "score_map",
+                        lambda: persist_score_map(
                             storage=storage,
                             store=store,
                             manifest=manifest,
-                            result=analyze_rhythm(storage=storage, store=store, manifest=manifest),
+                            result=build_score_map(storage=storage, masterclass_store=masterclasses, store=store, manifest=manifest),
                         ),
                     )
-                else:
-                    manifest.metadata["rhythm_state"] = "skipped"
-                    store.save(manifest)
 
-                if profile.family == "keyboard" and manifest.metadata.get("audio_truth_state") == "ready":
-                    run_best_effort(
-                        "voicing",
-                        lambda: persist_voicing(
-                            storage=storage,
-                            store=store,
-                            manifest=manifest,
-                            result=analyze_voicing(storage=storage, store=store, manifest=manifest),
-                        ),
-                    )
-                else:
-                    manifest.metadata["voicing_state"] = "skipped"
-                    store.save(manifest)
+                    profile = load_instrument_profile(manifest.instrument_profile)
+                    # Gate downstream analyses on the audio-truth stage status.
+                    # We read ``audio_truth_state`` here for back-compat; the
+                    # equivalent vocabulary-clean key ``aligned_notes_state``
+                    # is mirrored immediately after the audio-truth run above
+                    # so newer code can read either name. Both will live for
+                    # one release; once every consumer has migrated to
+                    # ``aligned_notes_state``, remove the dual-write and read
+                    # only the new name.
+                    if intonation_enabled_for_profile(profile) and manifest.metadata.get("audio_truth_state") == "ready":
+                        run_best_effort("intonation", lambda: analyze_intonation(storage=storage, store=store, manifest=manifest))
+                    else:
+                        manifest.metadata["intonation_state"] = "skipped"
+                        store.save(manifest)
 
-                if manifest.metadata.get("rhythm_state") == "ready":
-                    run_best_effort(
-                        "mechanical_comments",
-                        lambda: persist_mechanical_comments(
-                            storage=storage,
-                            store=store,
-                            manifest=manifest,
-                            result=generate_mechanical_comments(storage=storage, store=store, manifest=manifest),
-                        ),
-                    )
-                else:
-                    manifest.metadata["mechanical_comments_state"] = "skipped"
-                    store.save(manifest)
-
-                try:
-                    provider = _build_llm_provider_for_user(user_id)
-                except HTTPException as exc:
-                    manifest.metadata["teach_state"] = "failed"
-                    manifest.metadata["teach_error"] = str(exc.detail)
-                    manifest.state = JobState.READY
-                    store.save(manifest)
-                    return
-
-                score_pages: list[bytes] = []
-                score_layout: list[dict[str, Any]] = []
-                if class_manifest is not None:
-                    try:
-                        score_pages, score_layout = select_score_pages_for_lesson(
-                            storage=storage,
-                            masterclass=class_manifest,
-                            first_measure=manifest.metadata.get("first_measure"),
-                            last_measure=manifest.metadata.get("last_measure"),
+                    if manifest.metadata.get("audio_truth_state") == "ready":
+                        run_best_effort(
+                            "rhythm",
+                            lambda: persist_rhythm(
+                                storage=storage,
+                                store=store,
+                                manifest=manifest,
+                                result=analyze_rhythm(storage=storage, store=store, manifest=manifest),
+                            ),
                         )
-                    except FileNotFoundError:
-                        score_pages, score_layout = [], []
+                    else:
+                        manifest.metadata["rhythm_state"] = "skipped"
+                        store.save(manifest)
 
-                manifest.metadata["teach_state"] = "running"
-                store.save(manifest)
-                audio_key = ArtifactCatalog(manifest).audio_wav()
-                if not audio_key:
-                    raise RuntimeError("audio missing after extract_media")
-                compact_audio = _downsample_audio_for_teach(ffmpeg, audio_key)
-                compact_key = store.artifact_key(manifest.session, "artifacts/audio_16k.wav")
-                storage.write_bytes(compact_key, compact_audio, content_type="audio/wav")
-                manifest.artifacts["artifacts/audio_16k.wav"] = compact_key
-                store.save(manifest)
-                try:
-                    manifest = teach_lesson(
-                        storage=storage,
-                        store=store,
-                        manifest=manifest,
-                        provider=provider,
-                        score_pages=score_pages,
-                        score_layout=score_layout,
-                        config=TeachConfig(model=os.environ.get("MASTERCLASS_TEACH_MODEL", _preferred_model_for_user(user_id))),
-                    )
+                    if profile.family == "keyboard" and manifest.metadata.get("audio_truth_state") == "ready":
+                        run_best_effort(
+                            "voicing",
+                            lambda: persist_voicing(
+                                storage=storage,
+                                store=store,
+                                manifest=manifest,
+                                result=analyze_voicing(storage=storage, store=store, manifest=manifest),
+                            ),
+                        )
+                    else:
+                        manifest.metadata["voicing_state"] = "skipped"
+                        store.save(manifest)
+
+                    if manifest.metadata.get("rhythm_state") == "ready":
+                        run_best_effort(
+                            "mechanical_comments",
+                            lambda: persist_mechanical_comments(
+                                storage=storage,
+                                store=store,
+                                manifest=manifest,
+                                result=generate_mechanical_comments(storage=storage, store=store, manifest=manifest),
+                            ),
+                        )
+                    else:
+                        manifest.metadata["mechanical_comments_state"] = "skipped"
+                        store.save(manifest)
+
+                    try:
+                        provider = _build_llm_provider_for_user(user_id)
+                    except HTTPException as exc:
+                        manifest.metadata["teach_state"] = "failed"
+                        manifest.metadata["teach_error"] = str(exc.detail)
+                        manifest.state = JobState.READY
+                        store.save(manifest)
+                        return
+
+                    score_pages: list[bytes] = []
+                    score_layout: list[dict[str, Any]] = []
+                    if class_manifest is not None:
+                        try:
+                            score_pages, score_layout = select_score_pages_for_lesson(
+                                storage=storage,
+                                masterclass=class_manifest,
+                                first_measure=manifest.metadata.get("first_measure"),
+                                last_measure=manifest.metadata.get("last_measure"),
+                            )
+                        except FileNotFoundError:
+                            score_pages, score_layout = [], []
+
+                    manifest.metadata["teach_state"] = "running"
+                    store.save(manifest)
+                    audio_key = ArtifactCatalog(manifest).audio_wav()
+                    if not audio_key:
+                        raise RuntimeError("audio missing after extract_media")
+                    compact_audio = _downsample_audio_for_teach(ffmpeg, audio_key)
+                    compact_key = store.artifact_key(manifest.session, "artifacts/audio_16k.wav")
+                    storage.write_bytes(compact_key, compact_audio, content_type="audio/wav")
+                    manifest.artifacts["artifacts/audio_16k.wav"] = compact_key
+                    store.save(manifest)
+                    try:
+                        manifest = teach_lesson(
+                            storage=storage,
+                            store=store,
+                            manifest=manifest,
+                            provider=provider,
+                            score_pages=score_pages,
+                            score_layout=score_layout,
+                            config=TeachConfig(model=os.environ.get("MASTERCLASS_TEACH_MODEL", _preferred_model_for_user(user_id))),
+                        )
+                    except Exception as exc:
+                        manifest.metadata["teach_state"] = "failed"
+                        manifest.metadata["teach_error"] = f"{type(exc).__name__}: {exc}"
+                        manifest.errors.append({
+                            "stage": "teach",
+                            "warning": True,
+                            "error": manifest.metadata["teach_error"],
+                            "at": datetime.now(UTC).isoformat(),
+                        })
+                        manifest.state = JobState.READY
+                        store.save(manifest)
                 except Exception as exc:
-                    manifest.metadata["teach_state"] = "failed"
-                    manifest.metadata["teach_error"] = f"{type(exc).__name__}: {exc}"
+                    manifest.state = JobState.FAILED
                     manifest.errors.append({
-                        "stage": "teach",
-                        "warning": True,
-                        "error": manifest.metadata["teach_error"],
+                        "stage": "lesson_jobs",
+                        "error": f"{type(exc).__name__}: {exc}",
                         "at": datetime.now(UTC).isoformat(),
                     })
-                    manifest.state = JobState.READY
                     store.save(manifest)
-            except Exception as exc:
-                manifest.state = JobState.FAILED
-                manifest.errors.append({
-                    "stage": "lesson_jobs",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "at": datetime.now(UTC).isoformat(),
-                })
-                store.save(manifest)
-                raise
-        except Exception:
-            logging.exception("lesson background jobs failed for %s", session_id)
+                    raise
+            except Exception:
+                logging.exception("lesson background jobs failed for %s", session_id)
 
     def _spawn(target, *args, **kwargs) -> None:
         """Run a background job in a real OS thread so multiple jobs run in parallel.
@@ -536,31 +547,42 @@ def create_app():
         threading.Thread(target=fn if kwargs else target, args=() if kwargs else args, daemon=True).start()
 
     def _run_score_prep(masterclass_id: str, tenant_id: str, user_id: str) -> None:
-        try:
-            ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
-            manifest = masterclasses.load_by_id(ctx, masterclass_id)
-            try:
-                provider = _build_llm_provider_for_user(user_id)
-            except HTTPException as exc:
-                manifest.metadata["score_prep_state"] = "skipped"
-                manifest.metadata["score_prep_error"] = str(exc.detail)
-                manifest.metadata["score_prep_updated_at"] = datetime.now(UTC).isoformat()
-                masterclasses.save(manifest)
-                return
-            # score_prep used to wait up to 90s for the Gemini midi_finder to
-            # land so it could cross-check measure counts. midi_finder is
-            # removed (audio-truth reads MusicXML directly from Audiveris),
-            # so the wait would always time out; just proceed.
-            prepare_score(
-                storage=storage,
-                masterclass_store=masterclasses,
-                manifest=manifest,
-                provider=provider,
-                config=ScorePrepConfig(model=score_prep_model),
+        with with_job_context(
+            job_id=masterclass_id,
+            job_kind="score_prep",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            masterclass_id=masterclass_id,
+        ):
+            logging.getLogger(__name__).info(
+                "score prep background job starting", extra={"event": "job.start"},
             )
-        except Exception:  # pragma: no cover - background errors land on the manifest
-            import logging
-            logging.exception("score prep failed for masterclass %s", masterclass_id)
+            try:
+                ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+                manifest = masterclasses.load_by_id(ctx, masterclass_id)
+                try:
+                    provider = _build_llm_provider_for_user(user_id)
+                except HTTPException as exc:
+                    manifest.metadata["score_prep_state"] = "skipped"
+                    manifest.metadata["score_prep_error"] = str(exc.detail)
+                    manifest.metadata["score_prep_updated_at"] = datetime.now(UTC).isoformat()
+                    masterclasses.save(manifest)
+                    return
+                # score_prep used to wait up to 90s for the Gemini midi_finder to
+                # land so it could cross-check measure counts. midi_finder is
+                # removed (audio-truth reads MusicXML directly from Audiveris),
+                # so the wait would always time out; just proceed.
+                prepare_score(
+                    storage=storage,
+                    masterclass_store=masterclasses,
+                    manifest=manifest,
+                    provider=provider,
+                    config=ScorePrepConfig(model=score_prep_model),
+                )
+            except Exception:  # pragma: no cover - background errors land on the manifest
+                logging.getLogger(__name__).exception(
+                    "score prep failed", extra={"event": "job.error"},
+                )
 
     class CreateSessionRequest(BaseModel):
         source_filename: str | None = None
@@ -583,9 +605,13 @@ def create_app():
         if not resolved:
             raise HTTPException(status_code=401, detail="Sign in with Google to continue")
         try:
-            return TenantContext(tenant_id=resolved, user_id=resolved)
+            ctx = TenantContext(tenant_id=resolved, user_id=resolved)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Tag the active request's log context with the resolved principal so
+        # all downstream logs (route handler, storage, agent tools) carry it.
+        bind_request_principal(tenant_id=ctx.tenant_id, user_id=ctx.user_id)
+        return ctx
 
 
     @app.get("/auth/login")
@@ -2247,33 +2273,44 @@ def create_app():
 
     def _run_drill_jobs(drill_session_id: str, tenant_id: str, user_id: str) -> None:
         """Background drill worker: build provider + ffmpeg, then run the pipeline."""
-        import logging
-        try:
-            ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
-            try:
-                manifest = store.load_by_id(ctx, drill_session_id)
-            except FileNotFoundError:
-                return
-            try:
-                provider = _build_llm_provider_for_user(user_id)
-            except HTTPException as exc:
-                manifest.metadata["drill_state"] = "failed"
-                manifest.metadata["drill_error"] = str(exc.detail)
-                manifest.metadata["drill_feedback_state"] = "failed"
-                manifest.metadata["drill_feedback_error"] = str(exc.detail)
-                manifest.state = JobState.FAILED
-                store.save(manifest)
-                return
-            from masterclass.engine.drill_pipeline import DrillConfig, run_drill_pipeline
-            run_drill_pipeline(
-                storage=storage,
-                store=store,
-                manifest=manifest,
-                provider=provider,
-                config=DrillConfig(model=os.environ.get("MASTERCLASS_DRILL_MODEL", "gemini-2.5-flash")),
+        with with_job_context(
+            job_id=drill_session_id,
+            job_kind="drill",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=drill_session_id,
+        ):
+            logging.getLogger(__name__).info(
+                "drill background job starting", extra={"event": "job.start"},
             )
-        except Exception:
-            logging.exception("drill background job failed for %s", drill_session_id)
+            try:
+                ctx = TenantContext(tenant_id=tenant_id, user_id=user_id)
+                try:
+                    manifest = store.load_by_id(ctx, drill_session_id)
+                except FileNotFoundError:
+                    return
+                try:
+                    provider = _build_llm_provider_for_user(user_id)
+                except HTTPException as exc:
+                    manifest.metadata["drill_state"] = "failed"
+                    manifest.metadata["drill_error"] = str(exc.detail)
+                    manifest.metadata["drill_feedback_state"] = "failed"
+                    manifest.metadata["drill_feedback_error"] = str(exc.detail)
+                    manifest.state = JobState.FAILED
+                    store.save(manifest)
+                    return
+                from masterclass.engine.drill_pipeline import DrillConfig, run_drill_pipeline
+                run_drill_pipeline(
+                    storage=storage,
+                    store=store,
+                    manifest=manifest,
+                    provider=provider,
+                    config=DrillConfig(model=os.environ.get("MASTERCLASS_DRILL_MODEL", "gemini-2.5-flash")),
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "drill background job failed", extra={"event": "job.error"},
+                )
 
     def _create_drill_manifest(
         ctx: TenantContext,
